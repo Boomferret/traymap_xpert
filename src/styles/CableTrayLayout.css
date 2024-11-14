@@ -1,0 +1,147 @@
+.cable-tray {
+  position: relative;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 1rem;
+  transition: background 0.3s ease;
+}
+
+.cable-tray:hover {
+  background: #e2e8f0;
+}
+
+.cable-tray-grid {
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: box-shadow 0.3s ease;
+}
+
+.cable-tray-grid:hover {
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.cable-path {
+  cursor: pointer;
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  stroke-linecap: round;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+.cable-path:hover {
+  stroke: #1e293b;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+
+.cable-section {
+  transition: opacity 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.cable-trunk-node {
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+.cable-machine {
+  font-size: 0.875rem;
+  font-weight: 600;
+  fill: #1e293b;
+  letter-spacing: 0.5px;
+}
+
+.machine-node {
+  cursor: move;
+  transition: all 0.2s ease;
+}
+
+.machine-node:hover {
+  filter: brightness(1.1);
+  transform: scale(1.05);
+}
+
+.machine-node.dragging {
+  opacity: 0.5;
+}
+
+.tooltip {
+  position: absolute;
+  background-color: white;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  z-index: 10;
+  backdrop-filter: blur(8px);
+  max-width: 300px;
+}
+
+.tooltip-content {
+  margin-bottom: 0.5rem;
+}
+
+.tooltip-title {
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 0.925rem;
+}
+
+.tooltip-subtitle {
+  font-size: 0.875rem;
+  color: #64748b;
+  margin-top: 0.25rem;
+}
+
+.tooltip-list {
+  list-style-type: none;
+  max-height: 12rem;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.tooltip-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.tooltip-list::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 2px;
+}
+
+.tooltip-list::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 2px;
+}
+
+.tooltip-list-item {
+  font-size: 0.875rem;
+  padding: 0.25rem 0;
+  color: #475569;
+  display: flex;
+  align-items: center;
+  transition: background 0.3s ease;
+}
+
+.tooltip-list-item:hover {
+  background: #e2e8f0;
+}
+
+.tooltip-list-item:before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+  margin-right: 0.5rem;
+}
+
+.info-panel {
+  width: 16rem;
+  background: white;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  max-height: calc(100vh);
+  overflow-y: auto;
+  height: fit-content;
+}
