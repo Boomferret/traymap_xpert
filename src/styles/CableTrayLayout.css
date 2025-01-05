@@ -1,0 +1,16 @@
+.cable-tray {
+  position: relative;
+}
+
+.cable-tray-grid {
+  background: white;
+}
+
+.cable-path {
+  transition: all 0.2s ease;
+}
+
+.cable-machine {
+  font-size: 12px;
+  font-weight: 500;
+}
