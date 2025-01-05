@@ -4,6 +4,7 @@ import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { optimizeNetworkPaths } from '@/utils/cableUtils';
 import { EditorModes } from '@/constants/editorModes';
 import { CableTraySimulation } from './CableTraySimulation';
+import { Switch } from '@/components/ui/switch';
 
 // Add this function before the LayoutGrid component definition
 const preprocessBlockedGrid = (walls, perforations, gridSize) => {
@@ -128,6 +129,7 @@ export const LayoutGrid = ({
     perforations = [],
     machines = {},
     cables = [],
+    networks = [],
     networkVisibility = {},
     activeMode,
     selectedMachine = null,
@@ -135,7 +137,8 @@ export const LayoutGrid = ({
     onWallAdd,
     onPerforationAdd,
     onMachinePlace,
-    onMachineMove
+    onMachineMove,
+    onNetworkVisibilityChange
   }) => {
     const [isDragging, setIsDragging] = useState(false);
     const [dragStart, setDragStart] = useState(null);
@@ -556,10 +559,25 @@ export const LayoutGrid = ({
           {networkInfo.map(network => (
             <div
               key={network.type}
-              className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50 cursor-pointer"
+              className="flex items-center gap-2 px-2 py-1.5 rounded-md transition-all duration-150"
+              style={{
+                backgroundColor: hoveredNetwork === network.type ? `${network.color}15` : 'transparent',
+                transform: hoveredNetwork === network.type ? 'scale(1.02)' : 'scale(1)'
+              }}
               onMouseEnter={() => setHoveredNetwork(network.type)}
               onMouseLeave={() => setHoveredNetwork(null)}
             >
+              <Switch
+                checked={networkVisibility[network.type] !== false}
+                onCheckedChange={(checked) => {
+                  const updatedVisibility = {
+                    ...networkVisibility,
+                    [network.type]: checked
+                  };
+                  onNetworkVisibilityChange(updatedVisibility);
+                }}
+                className="h-4 w-7"
+              />
               <span 
                 className="w-3 h-3 rounded-full"
                 style={{ backgroundColor: network.color }}
@@ -813,7 +831,19 @@ export const LayoutGrid = ({
               }}
               onClick={() => handleSectionClick(section)}
               onDoubleClick={() => {
-                setSelectedSectionCables(Array.from(section.details.values()));
+                const cablesWithDetails = Array.from(section.details.values()).map(cable => {
+                  // Find the network for this cable
+                  const network = networks.find(n => n.functions.includes(cable.cableFunction));
+                  return {
+                    ...cable,
+                    diameter: cable.diameter,
+                    function: cable.cableFunction,
+                    type: network?.name || 'Unknown',
+                    network: network?.name || 'Unknown',
+                    color: network?.color || '#999999'
+                  };
+                });
+                setSelectedSectionCables(cablesWithDetails);
                 setSimulationOpen(true);
               }}
             >
@@ -954,6 +984,7 @@ export const LayoutGrid = ({
 
       <CableTraySimulation
         cables={selectedSectionCables}
+        networks={networks}
         isOpen={simulationOpen}
         onClose={() => setSimulationOpen(false)}
       />

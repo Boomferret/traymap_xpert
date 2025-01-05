@@ -89,7 +89,8 @@ export const LayoutEditor = () => {
             return {
               ...cable,
               type: network?.name || 'unknown',
-              color: network?.color || '#999999'
+              color: network?.color || '#999999',
+              diameter: cable.diameter
             };
           });
     
@@ -122,6 +123,7 @@ export const LayoutEditor = () => {
               target: targetDevice,
               targetLocation,
               length,
+              diameter,
               cableType,
               cableFunction,
               internalExternal
@@ -431,6 +433,7 @@ export const LayoutEditor = () => {
               perforations={perforations}
               machines={machines}
               cables={cables}
+              networks={networks}
               networkVisibility={networkVisibility}
               activeMode={editorMode}
               selectedMachine={selectedMachine}
@@ -438,6 +441,7 @@ export const LayoutEditor = () => {
               onPerforationAdd={handlePerforationAdd}
               onMachinePlace={handleMachinePlace}
               onMachineMove={handleMachineMove}
+              onNetworkVisibilityChange={setNetworkVisibility}
             />
           </div>
         </Card>

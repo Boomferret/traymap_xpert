@@ -23,7 +23,7 @@ const TRAY_SIZES = [
   label: `${size.width}×${size.height}mm (${(size.width * size.height).toLocaleString()}mm²)`
 }));
 
-export const CableTraySimulation = ({ cables, isOpen, onClose }) => {
+export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
   const svgRef = useRef(null);
   const [cablesWithDiameters, setCablesWithDiameters] = useState([]);
   const [hasPrompted, setHasPrompted] = useState(false);
@@ -37,12 +37,14 @@ export const CableTraySimulation = ({ cables, isOpen, onClose }) => {
   const MIN_SVG_WIDTH = 800;
   const MIN_SVG_HEIGHT = 400;
 
-  // Network base colors
-  const NETWORK_COLORS = {
-    'power': d3.rgb(255, 0, 0),    // Red base
-    'control': d3.rgb(0, 0, 255),  // Blue base
-    'data': d3.rgb(0, 255, 0),     // Green base
-    'other': d3.rgb(128, 128, 128) // Gray base for unknown networks
+  // Function to get color based on network and function
+  const getColorForCable = (cable) => {
+    if (cable.color) return cable.color;
+    const network = networks.find(n => n.functions.includes(cable.function));
+    if (network) {
+      return network.color;
+    }
+    return '#999999'; // Default gray for unknown networks
   };
 
   // Group cables by function for the legend
@@ -50,73 +52,18 @@ export const CableTraySimulation = ({ cables, isOpen, onClose }) => {
     const functionMap = new Map();
     
     cables.forEach(cable => {
-      const functionKey = cable.cableFunction || 'Unknown';
-      const network = cable.type === 'power' ? 'power' : 
-                     cable.type === 'control' ? 'control' : 
-                     cable.network || 'other';
+      const functionKey = cable.function || 'Unknown';
       
       if (!functionMap.has(functionKey)) {
         functionMap.set(functionKey, {
           function: functionKey,
-          network: network,
-          color: getColorForCable({ function: functionKey, network: network })
+          network: cable.network || cable.type || 'Unknown',
+          color: cable.color || '#999999'
         });
       }
     });
     
     return Array.from(functionMap.values());
-  };
-
-  // Function to get color based on network and function
-  const getColorForCable = (cable) => {
-    const network = cable.network?.toLowerCase() || 'other';
-    const baseColor = NETWORK_COLORS[network] || NETWORK_COLORS.other;
-    
-    // Create a unique and distinct shade based on the function
-    const functionKey = cable.function?.toLowerCase() || 'unknown';
-    
-    // Use HSL for more distinct variations
-    const hslColor = d3.hsl(baseColor);
-    
-    // Create distinct variations based on function name
-    let hueMod = 0;
-    let satMod = 0;
-    let lightnessMod = 0;
-    
-    switch(functionKey) {
-      case 'signal':
-        hueMod = 30;
-        satMod = 0.2;
-        lightnessMod = 0.1;
-        break;
-      case 'control':
-        hueMod = -30;
-        satMod = -0.1;
-        lightnessMod = -0.1;
-        break;
-      case 'power':
-        hueMod = 15;
-        satMod = 0;
-        lightnessMod = 0;
-        break;
-      case 'data':
-        hueMod = -15;
-        satMod = 0.1;
-        lightnessMod = 0.2;
-        break;
-      default:
-        // For unknown functions, create a hash-based variation
-        const hash = Array.from(functionKey).reduce((acc, char) => acc + char.charCodeAt(0), 0);
-        hueMod = (hash % 60) - 30;
-        satMod = ((hash % 4) - 2) * 0.1;
-        lightnessMod = ((hash % 4) - 2) * 0.1;
-    }
-
-    return d3.hsl(
-      hslColor.h + hueMod,
-      Math.max(0.2, Math.min(1, hslColor.s + satMod)),
-      Math.max(0.2, Math.min(0.8, hslColor.l + lightnessMod))
-    ).toString();
   };
 
   // Calculate SVG dimensions based on tray size
@@ -141,8 +88,15 @@ export const CableTraySimulation = ({ cables, isOpen, onClose }) => {
   // Helper function to parse diameter string
   const parseDiameter = (diameterStr) => {
     if (!diameterStr) return null;
+    
+    // If it's already a number, return it
+    if (typeof diameterStr === 'number') return diameterStr;
+    
+    // Convert to string if it's not already
+    const str = String(diameterStr);
+    
     // Remove "mm" and trim whitespace
-    const cleaned = diameterStr.replace('mm', '').trim();
+    const cleaned = str.replace('mm', '').trim();
     // Replace comma with dot for decimal numbers
     const normalized = cleaned.replace(',', '.');
     const parsed = parseFloat(normalized);
@@ -617,12 +571,10 @@ export const CableTraySimulation = ({ cables, isOpen, onClose }) => {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div 
-        className="bg-white rounded-lg p-4 w-full h-full flex flex-col"
+        className="bg-white rounded-lg p-4 max-w-[90vw] max-h-[90vh] w-full h-full flex flex-col overflow-hidden"
         style={{
           width: `${modalDimensions.width}px`,
-          height: `${modalDimensions.height}px`,
-          transform: `scale(${modalDimensions.scale})`,
-          transformOrigin: 'center'
+          height: `${modalDimensions.height}px`
         }}
       >
         <div className="flex justify-between items-center mb-4">
@@ -691,22 +643,23 @@ export const CableTraySimulation = ({ cables, isOpen, onClose }) => {
           </div>
         </div>
 
-        <div className="relative overflow-auto flex justify-center">
+        <div className="flex-1 relative flex justify-center items-center min-h-0">
           <svg
             ref={svgRef}
-            className="w-full"
+            className="w-full h-full"
             style={{ 
-              minWidth: `${svgDimensions.width}px`,
-              height: `${svgDimensions.height}px`
+              maxWidth: '100%',
+              maxHeight: '100%'
             }}
+            preserveAspectRatio="xMidYMid meet"
           />
           {tooltip.show && (
             <div
               className="absolute bg-white px-2 py-1 rounded shadow-lg text-sm pointer-events-none whitespace-pre-line"
               style={{
                 left: tooltip.x + 15,
-                top: tooltip.y - 40,
-                transform: 'none'
+                top: tooltip.y - 15,
+                transform: 'translate(40%, -200%)'
               }}
             >
               {tooltip.content}
