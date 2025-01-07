@@ -8,6 +8,7 @@ import { Square as Wall, CircleDot, Plus, X, GripVertical } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { InitialSetupModal } from './InitialSetupModal';
 
 // Default network configurations
 const DEFAULT_NETWORKS = [
@@ -52,7 +53,56 @@ const initialMachines = Array.from({ length: 10 }, (_, i) => ({
   name: `M${i + 1}`
 }));
 
+const mergeMachines = (machines, cables, machineA, machineB) => {
+  // Create new machines object without machineB
+  const newMachines = { ...machines };
+  
+  // Get existing machine data or create default structures
+  const machineAData = newMachines[machineA] || { x: 0, y: 0, mergedHistory: { [machineA]: true } };
+  const machineBData = newMachines[machineB] || { x: 0, y: 0, mergedHistory: { [machineB]: true } };
+  
+  // Create or update merged history
+  const mergedHistory = {
+    ...(machineAData.mergedHistory || { [machineA]: true }),
+    ...(machineBData.mergedHistory || { [machineB]: true })
+  };
+  
+  // Update machine A with merged history and description
+  newMachines[machineA] = {
+    ...machineAData,
+    mergedHistory,
+    description: [
+      machineAData.description,
+      machineBData.description
+    ].filter(Boolean).join(' + ')
+  };
+  
+  delete newMachines[machineB];
+
+  // Keep original source/target in cables but mark them as merged
+  const updatedCables = cables.map(cable => {
+    const newCable = { ...cable };
+    if (cable.source === machineB) {
+      newCable.source = machineA;
+      newCable.originalSource = machineB;
+    }
+    if (cable.target === machineB) {
+      newCable.target = machineA;
+      newCable.originalTarget = machineB;
+    }
+    return newCable;
+  });
+
+  return { newMachines, updatedCables };
+};
+
 export const LayoutEditor = () => {
+    const [showInitialSetup, setShowInitialSetup] = useState(true);
+    const [canvasConfig, setCanvasConfig] = useState({
+      width: 10,
+      height: 10,
+      gridResolution: 0.1
+    });
     const [editorMode, setEditorMode] = useState(EditorModes.WALL);
     const [walls, setWalls] = useState([]);
     const [perforations, setPerforations] = useState([]);
@@ -70,6 +120,7 @@ export const LayoutEditor = () => {
         return acc;
       }, {});
     });
+    const [inheritMode, setInheritMode] = useState({ active: false, targetMachine: null });
   
     useEffect(() => {
       const machineCount = Object.keys(machines).length;
@@ -79,21 +130,60 @@ export const LayoutEditor = () => {
           const visibleNetworks = networks.filter(n => n.visible);
           const visibleFunctions = visibleNetworks.flatMap(n => n.functions);
           
-          const relevantCables = importedCables.filter(cable => 
-            machines[cable.source] && 
-            machines[cable.target] && 
-            visibleFunctions.includes(cable.cableFunction)
-          ).map(cable => {
+          // Get all valid machine names including merged ones
+          const validMachineNames = new Set();
+          const mergedMachineMap = new Map(); // Map original names to current names
+          
+          Object.entries(machines).forEach(([name, machine]) => {
+            if (machine.mergedHistory) {
+              Object.keys(machine.mergedHistory).forEach(originalName => {
+                validMachineNames.add(originalName);
+                mergedMachineMap.set(originalName, name);
+              });
+            } else {
+              validMachineNames.add(name);
+              mergedMachineMap.set(name, name);
+            }
+          });
+          
+          const relevantCables = importedCables.filter(cable => {
+            // Check if either the original or current source/target is a valid machine
+            const sourceValid = validMachineNames.has(cable.source) || validMachineNames.has(cable.originalSource);
+            const targetValid = validMachineNames.has(cable.target) || validMachineNames.has(cable.originalTarget);
+            return sourceValid && targetValid && visibleFunctions.includes(cable.cableFunction);
+          }).map(cable => {
             // Find the network this cable belongs to
             const network = networks.find(n => n.functions.includes(cable.cableFunction));
-            return {
+            
+            // Update source and target to current machine names while preserving originals
+            const newCable = {
               ...cable,
               type: network?.name || 'unknown',
               color: network?.color || '#999999',
               diameter: cable.diameter
             };
+
+            // If source is merged, update it
+            if (validMachineNames.has(cable.source)) {
+              const currentMachine = mergedMachineMap.get(cable.source);
+              if (currentMachine !== cable.source) {
+                newCable.originalSource = cable.source;
+                newCable.source = currentMachine;
+              }
+            }
+
+            // If target is merged, update it
+            if (validMachineNames.has(cable.target)) {
+              const currentMachine = mergedMachineMap.get(cable.target);
+              if (currentMachine !== cable.target) {
+                newCable.originalTarget = cable.target;
+                newCable.target = currentMachine;
+              }
+            }
+
+            return newCable;
           });
-    
+
           setCables(relevantCables);
         } else {
           const newCables = generateRandomCables(machines);
@@ -184,13 +274,22 @@ export const LayoutEditor = () => {
         if (!selectedMachine) return;
     
         const hasWall = walls.some(wall => wall.x === x && wall.y === y);
-        const hasMachine = Object.values(machines).some(machine => machine.x === x && machine.y === y);
         
-        if (!hasWall && !hasMachine) {
+        // Check if there's already a machine at this position
+        const existingMachine = Object.entries(machines).find(([_, pos]) => pos.x === x && pos.y === y);
+        
+        if (!hasWall && !existingMachine) {
+          // Place the machine normally with initial structure
           setMachines(prevMachines => ({
             ...prevMachines,
-            [selectedMachine.name]: { x, y }
+            [selectedMachine.name]: {
+              x,
+              y,
+              description: selectedMachine.description || '',
+              mergedHistory: { [selectedMachine.name]: true }
+            }
           }));
+          
           setAvailableMachines(prev => prev.filter(m => m.name !== selectedMachine.name));
           setSelectedMachine(null);
         }
@@ -198,17 +297,43 @@ export const LayoutEditor = () => {
     
       const handleMachineMove = useCallback((machineName, x, y) => {
         const hasWall = walls.some(wall => wall.x === x && wall.y === y);
-        const hasMachine = Object.entries(machines).some(([name, machine]) => 
-          name !== machineName && machine.x === x && machine.y === y
+        
+        // Check if there's already a machine at this position
+        const existingMachine = Object.entries(machines).find(([name, pos]) => 
+          name !== machineName && pos.x === x && pos.y === y
         );
         
-        if (!hasWall && !hasMachine) {
-          setMachines(prevMachines => ({
-            ...prevMachines,
-            [machineName]: { x, y }
-          }));
+        if (!hasWall && !existingMachine) {
+          // Move the machine normally while preserving its structure
+          setMachines(prevMachines => {
+            const currentMachine = prevMachines[machineName] || { mergedHistory: { [machineName]: true } };
+            return {
+              ...prevMachines,
+              [machineName]: {
+                ...currentMachine,
+                x,
+                y
+              }
+            };
+          });
         }
       }, [walls, machines]);
+    
+      const handleMachineRemove = useCallback((machineName) => {
+        // Add the machine back to available machines
+        const machineToAdd = {
+          name: machineName,
+          description: machines[machineName]?.description
+        };
+        setAvailableMachines(prev => [...prev, machineToAdd]);
+
+        // Remove the machine from placed machines
+        setMachines(prev => {
+          const newMachines = { ...prev };
+          delete newMachines[machineName];
+          return newMachines;
+        });
+      }, [machines]);
     
       const handleAddNetwork = () => {
         if (networks.length >= MAX_NETWORKS) return;
@@ -278,8 +403,90 @@ export const LayoutEditor = () => {
         }));
       }, [networks, cables, networkVisibility]);
 
+      const handleMachineInherit = useCallback((targetMachineName, sourceMachineName) => {
+        // Get the target machine from placed machines
+        const targetMachine = machines[targetMachineName];
+        if (!targetMachine) return;
+
+        // Get the source machine either from placed machines or available machines
+        const sourceMachine = machines[sourceMachineName] || 
+          availableMachines.find(m => m.name === sourceMachineName);
+        
+        if (!sourceMachine) return;
+
+        // Create merged history combining both machines
+        const mergedHistory = {
+          ...(targetMachine.mergedHistory || { [targetMachineName]: true }),
+          ...(sourceMachine.mergedHistory || { [sourceMachineName]: true })
+        };
+
+        // Update the target machine with merged data
+        const updatedMachines = {
+          ...machines,
+          [targetMachineName]: {
+            ...targetMachine,
+            mergedHistory,
+            description: [
+              targetMachine.description,
+              sourceMachine.description
+            ].filter(Boolean).join(' + ')
+          }
+        };
+
+        // If source machine was placed, remove it from machines
+        if (machines[sourceMachineName]) {
+          delete updatedMachines[sourceMachineName];
+        }
+
+        // Update cables
+        const updatedCables = (importedCables.length > 0 ? importedCables : cables).map(cable => {
+          const newCable = { ...cable };
+          
+          // Update source if it matches the source machine
+          if (cable.source === sourceMachineName) {
+            newCable.source = targetMachineName;
+            newCable.originalSource = sourceMachineName;
+          }
+          
+          // Update target if it matches the source machine
+          if (cable.target === sourceMachineName) {
+            newCable.target = targetMachineName;
+            newCable.originalTarget = sourceMachineName;
+          }
+          
+          return newCable;
+        });
+
+        // Update state
+        setMachines(updatedMachines);
+        if (importedCables.length > 0) {
+          setImportedCables(updatedCables);
+        } else {
+          setCables(updatedCables);
+        }
+
+        // Remove the source machine from available machines if it was there
+        setAvailableMachines(prev => prev.filter(m => m.name !== sourceMachineName));
+      }, [machines, cables, importedCables, availableMachines]);
+
+      const handleCanvasSetup = (config) => {
+        setCanvasConfig({
+          width: config.width,
+          height: config.height,
+          gridResolution: config.gridResolution,
+          backgroundImage: config.image
+        });
+        setShowInitialSetup(false);
+      };
+
       return (
         <div className="flex flex-col h-full gap-4">
+          <InitialSetupModal
+            isOpen={showInitialSetup}
+            onClose={() => setShowInitialSetup(false)}
+            onSubmit={handleCanvasSetup}
+          />
+
           <div className="flex justify-between items-center">
             <input
               type="file"
@@ -383,14 +590,27 @@ export const LayoutEditor = () => {
               {availableMachines.map((machine) => (
                 <div
                   key={machine.name}
-                  onClick={() => handleMachineSelect(machine)}
+                  onClick={() => {
+                    if (inheritMode.active) {
+                      handleMachineInherit(inheritMode.targetMachine, machine.name);
+                      setInheritMode({ active: false, targetMachine: null });
+                      // Remove the machine from available machines since it's now merged
+                      setAvailableMachines(prev => prev.filter(m => m.name !== machine.name));
+                    } else {
+                      handleMachineSelect(machine);
+                    }
+                  }}
                   className={`flex items-center gap-2 p-2 rounded-md border transition-colors ${
                     selectedMachine?.name === machine.name 
                       ? 'bg-accent text-accent-foreground border-accent' 
-                      : 'bg-background hover:bg-accent/50 cursor-pointer'
+                      : inheritMode.active
+                        ? 'bg-background hover:bg-blue-50 cursor-copy'
+                        : 'bg-background hover:bg-accent/50 cursor-pointer'
                   }`}
                 >
-                  <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white font-medium">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-medium ${
+                    inheritMode.active ? 'bg-blue-500' : 'bg-green-500'
+                  }`}>
                     {machine.name}
                   </div>
                   <div className="flex flex-col">
@@ -408,6 +628,24 @@ export const LayoutEditor = () => {
               )}
             </div>
           </div>
+
+          {/* Add an indicator when in inherit mode */}
+          {inheritMode.active && (
+            <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                  <span className="text-sm text-blue-700">Select a machine to inherit from</span>
+                </div>
+                <button
+                  onClick={() => setInheritMode({ active: false, targetMachine: null })}
+                  className="text-blue-500 hover:text-blue-700 text-sm"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {Object.keys(machines).length >= 2 && (
             <div className="mt-4 p-3 border rounded-md bg-gray-50">
@@ -427,7 +665,7 @@ export const LayoutEditor = () => {
         <Card className="flex-1 p-6 min-h-[600px] flex items-center justify-center bg-gray-50">
           <div className="bg-white rounded-lg shadow-sm p-4">
             <LayoutGrid
-              gridSize={100}
+              gridSize={canvasConfig.width * 10}
               cellSize={10}
               walls={walls}
               perforations={perforations}
@@ -441,7 +679,10 @@ export const LayoutEditor = () => {
               onPerforationAdd={handlePerforationAdd}
               onMachinePlace={handleMachinePlace}
               onMachineMove={handleMachineMove}
+              onMachineRemove={handleMachineRemove}
               onNetworkVisibilityChange={setNetworkVisibility}
+              backgroundImage={canvasConfig.backgroundImage}
+              onMachineInherit={handleMachineInherit}
             />
           </div>
         </Card>

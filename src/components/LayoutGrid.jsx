@@ -5,6 +5,7 @@ import { optimizeNetworkPaths } from '@/utils/cableUtils';
 import { EditorModes } from '@/constants/editorModes';
 import { CableTraySimulation } from './CableTraySimulation';
 import { Switch } from '@/components/ui/switch';
+import PropTypes from 'prop-types';
 
 // Add this function before the LayoutGrid component definition
 const preprocessBlockedGrid = (walls, perforations, gridSize) => {
@@ -122,6 +123,14 @@ const MachineLabelComponent = React.memo(({ name, pos, cellSize, svgRef }) => {
     </g>
   );
 });
+
+// Update the helper function to only show first machine name
+const getMergedMachineName = (name, machine) => {
+  if (!machine || !machine.mergedHistory) return name;
+  // Just return the first machine name
+  return Object.keys(machine.mergedHistory)[0];
+};
+
 export const LayoutGrid = ({ 
     gridSize,
     cellSize,
@@ -138,179 +147,144 @@ export const LayoutGrid = ({
     onPerforationAdd,
     onMachinePlace,
     onMachineMove,
-    onNetworkVisibilityChange
-  }) => {
+    onMachineRemove,
+    onNetworkVisibilityChange,
+    onMachineInherit,
+    backgroundImage
+}) => {
     const [isDragging, setIsDragging] = useState(false);
-    const [dragStart, setDragStart] = useState(null);
-    const [dragEnd, setDragEnd] = useState(null);
-    const [previewWalls, setPreviewWalls] = useState([]);
-    const [draggedMachine, setDraggedMachine] = useState(null);
     const [dragPosition, setDragPosition] = useState(null);
-    const [tooltipInfo, setTooltipInfo] = useState(null);
-    const [activeTooltip, setActiveTooltip] = useState(null);
-    const [hoveredSegmentKey, setHoveredSegmentKey] = useState(null);
-    const [simulationOpen, setSimulationOpen] = useState(false);
+    const [draggedMachine, setDraggedMachine] = useState(null);
     const [selectedSectionCables, setSelectedSectionCables] = useState([]);
     const [hoveredNetwork, setHoveredNetwork] = useState(null);
-  
+    const [imageUrl, setImageUrl] = useState(null);
+    const [hoveredElement, setHoveredElement] = useState(null);
+    const [selectedElement, setSelectedElement] = useState(null);
+    const [hoveredCable, setHoveredCable] = useState(null);
+    const [currentSourceCables, setCurrentSourceCables] = useState([]);
+    const [currentTargetCables, setCurrentTargetCables] = useState([]);
     const svgRef = useRef(null);
-    const tooltipRef = useRef(null);
-  
-    const CANVAS_SIZE = gridSize * cellSize;
-  
-    // Enable tooltip scrolling
+    const [showTraySimulation, setShowTraySimulation] = useState(false);
+    const [selectedSectionForSimulation, setSelectedSectionForSimulation] = useState(null);
+    const [lastClickTime, setLastClickTime] = useState(0);
+    const [contextMenu, setContextMenu] = useState({ show: false, x: 0, y: 0, machine: null });
+    const [moveMode, setMoveMode] = useState({ active: false, machine: null });
+    const [showInheritMenu, setShowInheritMenu] = useState(false);
+    const [inheritFromMachine, setInheritFromMachine] = useState(null);
+    const [inheritMode, setInheritMode] = useState({ active: false, targetMachine: null });
+    const [activeTab, setActiveTab] = useState('sources');
+    const [sourceCurrentPage, setSourceCurrentPage] = useState(1);
+    const [targetCurrentPage, setTargetCurrentPage] = useState(1);
+    const prevSelectedElement = useRef(null);
+
+    // Handle background image
     useEffect(() => {
-      const handleWheel = (e) => {
-        if (activeTooltip && tooltipRef.current) {
-          const tooltip = tooltipRef.current;
-          const scrollableContent = tooltip.querySelector('.tooltip-scroll');
-          if (scrollableContent) {
-            scrollableContent.scrollTop += e.deltaY;
-            e.preventDefault();
-          }
-        }
-      };
-  
-      window.addEventListener('wheel', handleWheel, { passive: false });
-      return () => window.removeEventListener('wheel', handleWheel);
-    }, [activeTooltip]);
+      if (backgroundImage && !imageUrl) {
+        const url = URL.createObjectURL(backgroundImage);
+        setImageUrl(url);
+        return () => URL.revokeObjectURL(url);
+      }
+    }, [backgroundImage]);
+
+    // Calculate dimensions
+    const width = gridSize * cellSize;
+    const height = gridSize * cellSize;
+
     // Event handlers
-  const getGridCoordinates = useCallback((e) => {
-    if (!svgRef.current) return { x: 0, y: 0 };
-    const rect = svgRef.current.getBoundingClientRect();
-    const x = Math.round((e.clientX - rect.left) / cellSize);
-    const y = Math.round((e.clientY - rect.top) / cellSize);
-    return { x, y };
-  }, [cellSize]);
+    const getGridCoordinates = useCallback((e) => {
+      if (!svgRef.current) return { x: 0, y: 0 };
+      const rect = svgRef.current.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) / cellSize);
+      const y = Math.floor((e.clientY - rect.top) / cellSize);
+      return { x, y };
+    }, [cellSize]);
 
-  const getCursorStyle = useCallback(() => {
-    if (selectedMachine) return 'cursor-crosshair';
-    switch (activeMode) {
-      case EditorModes.WALL: return 'cursor-crosshair';
-      case EditorModes.PERFORATION: return 'cursor-cell';
-      default: return 'cursor-default';
-    }
-  }, [activeMode, selectedMachine]);
+    const getCursorStyle = useCallback(() => {
+      if (moveMode.active) return 'cursor-crosshair';
+      if (inheritMode.active) return 'cursor-copy';
+      if (selectedMachine) return 'cursor-crosshair';
+      switch (activeMode) {
+        case EditorModes.WALL: return 'cursor-crosshair';
+        case EditorModes.PERFORATION: return 'cursor-cell';
+        default: return 'cursor-default';
+      }
+    }, [activeMode, selectedMachine, moveMode.active, inheritMode.active]);
 
-  const handleMouseDown = useCallback((e) => {
-    if (activeMode === EditorModes.WALL) {
-      e.preventDefault();
+    const handleMouseDown = useCallback((e) => {
+      if (activeMode === EditorModes.WALL) {
+        e.preventDefault();
+        const coords = getGridCoordinates(e);
+        setIsDragging(true);
+        setDragPosition(coords);
+      }
+    }, [activeMode, getGridCoordinates]);
+
+    const handleMouseMove = useCallback((e) => {
       const coords = getGridCoordinates(e);
-      setIsDragging(true);
-      setDragStart(coords);
-      setDragEnd(coords);
-      setPreviewWalls([{ x: coords.x, y: coords.y }]);
-    }
-  }, [activeMode, getGridCoordinates]);
+      setDragPosition(coords);
+    }, [getGridCoordinates]);
 
-  const handleMouseMove = useCallback((e) => {
-    const coords = getGridCoordinates(e);
+    const handleMouseUp = useCallback(() => {
+      setIsDragging(false);
+      setDragPosition(null);
+      if (draggedMachine) {
+        setDraggedMachine(null);
+      }
+    }, [draggedMachine]);
 
-    if (isDragging && activeMode === EditorModes.WALL) {
-      setDragEnd(coords);
-      if (dragStart) {
-        const x1 = Math.min(dragStart.x, coords.x);
-        const x2 = Math.max(dragStart.x, coords.x);
-        const y1 = Math.min(dragStart.y, coords.y);
-        const y2 = Math.max(dragStart.y, coords.y);
-        const previewCells = [];
-
-        // Generate only perimeter walls
-        for (let x = x1; x <= x2; x++) {
-          // Top and bottom walls
-          previewCells.push({ x, y: y1 });
-          if (y1 !== y2) {
-            previewCells.push({ x, y: y2 });
+    const handleClick = useCallback((e) => {
+      const coords = getGridCoordinates(e);
+      
+      if (moveMode.active) {
+        onMachineMove(moveMode.machine, coords.x, coords.y);
+        setMoveMode({ active: false, machine: null });
+        return;
+      }
+      
+      switch (activeMode) {
+        case EditorModes.WALL:
+          onWallAdd(coords.x, coords.y);
+          break;
+        case EditorModes.PERFORATION:
+          onPerforationAdd(coords.x, coords.y);
+          break;
+        case EditorModes.MACHINE:
+          if (selectedMachine) {
+            onMachinePlace(coords.x, coords.y);
           }
+          break;
+      }
+    }, [activeMode, selectedMachine, getGridCoordinates, onWallAdd, onPerforationAdd, onMachinePlace, moveMode, onMachineMove]);
+
+    // Section and machine interaction handlers
+    const handleMachineDragStart = useCallback((e, machineName) => {
+      e.stopPropagation();
+      setDraggedMachine(machineName);
+    }, []);
+
+    const handleMachineDragEnd = useCallback(() => {
+      if (draggedMachine && dragPosition) {
+        onMachineMove(draggedMachine, dragPosition.x, dragPosition.y);
+      }
+      setDraggedMachine(null);
+      setDragPosition(null);
+    }, [draggedMachine, dragPosition, onMachineMove]);
+
+    const handleSectionHover = useCallback((sectionKey, section, e) => {
+      if (!section || !e) {
+        if (!selectedElement) {
+          setHoveredElement(null);
         }
-        for (let y = y1 + 1; y < y2; y++) {
-          // Left and right walls
-          previewCells.push({ x: x1, y });
-          previewCells.push({ x: x2, y });
-        }
-        setPreviewWalls(previewCells);
+        return;
       }
-    }
 
-    setDragPosition(coords);
-  }, [isDragging, activeMode, dragStart, getGridCoordinates]);
-
-  const handleMouseUp = useCallback(() => {
-    if (isDragging && activeMode === EditorModes.WALL && dragStart) {
-      const x1 = Math.min(dragStart.x, dragEnd.x);
-      const x2 = Math.max(dragStart.x, dragEnd.x);
-      const y1 = Math.min(dragStart.y, dragEnd.y);
-      const y2 = Math.max(dragStart.y, dragEnd.y);
-
-      // Add only perimeter walls
-      for (let x = x1; x <= x2; x++) {
-        // Top and bottom walls
-        onWallAdd(x, y1);
-        if (y1 !== y2) {
-          onWallAdd(x, y2);
-        }
+      if (!selectedElement) {
+        setHoveredElement({
+          type: 'section',
+          data: section
+        });
       }
-      for (let y = y1 + 1; y < y2; y++) {
-        // Left and right walls
-        onWallAdd(x1, y);
-        onWallAdd(x2, y);
-      }
-    }
-    setIsDragging(false);
-    setDragStart(null);
-    setDragEnd(null);
-    setPreviewWalls([]);
-  }, [isDragging, activeMode, dragStart, dragEnd, onWallAdd]);
-
-  const handleClick = useCallback((e) => {
-    const coords = getGridCoordinates(e);
-    
-    switch (activeMode) {
-      case EditorModes.PERFORATION:
-        onPerforationAdd(coords.x, coords.y);
-        break;
-      case EditorModes.MACHINE:
-        if (selectedMachine) {
-          onMachinePlace(coords.x, coords.y);
-        }
-        break;
-    }
-  }, [activeMode, selectedMachine, getGridCoordinates, onPerforationAdd, onMachinePlace]);
-  // Section and machine interaction handlers
-  const handleMachineDragStart = useCallback((e, machineName) => {
-    e.stopPropagation();
-    setDraggedMachine(machineName);
-  }, []);
-
-  const handleMachineDragEnd = useCallback(() => {
-    if (draggedMachine && dragPosition) {
-      onMachineMove(draggedMachine, dragPosition.x, dragPosition.y);
-    }
-    setDraggedMachine(null);
-    setDragPosition(null);
-  }, [draggedMachine, dragPosition, onMachineMove]);
-
-  const handleSectionHover = useCallback((sectionKey, section, e, lengthInMeters) => {
-    if (!section || !e) {
-      if (!activeTooltip) {
-        setTooltipInfo(null);
-      }
-      return;
-    }
-
-    const svgRect = svgRef.current?.getBoundingClientRect();
-    setTooltipInfo({
-      type: 'section',
-      data: {
-        ...section,
-        length: lengthInMeters
-      },
-      position: {
-        x: e.clientX - svgRect.left,
-        y: e.clientY - svgRect.top
-      }
-    });
-  }, [activeTooltip]);
+    }, [selectedElement]);
 
     // Calculate sections from cable paths
     const { sections, processedSections } = useMemo(() => {
@@ -381,615 +355,1006 @@ export const LayoutGrid = ({
     }, [cables, machines, walls, perforations, gridSize]);
     
 
-  const handleSectionClick = useCallback((section) => {
-    setActiveTooltip(prev => {
-      if (prev?.data === section) {
-        return null;
+    const handleSectionClick = useCallback((section) => {
+        const now = Date.now();
+        const isDoubleClick = now - lastClickTime < 300; // 300ms threshold for double-click
+        setLastClickTime(now);
+
+        if (isDoubleClick) {
+            setSelectedSectionForSimulation(section);
+            setShowTraySimulation(true);
+        } else {
+            setSelectedElement(prev => prev?.data === section ? null : { type: 'section', data: section });
+        }
+    }, [lastClickTime]);
+
+    // Calculate section opacity based on selected cable
+    const getSectionOpacity = useCallback((section, isHovered, isNetworkHovered) => {
+      if (hoveredCable) {
+        return section.cables.has(hoveredCable) ? 1 : 0.2;
       }
-      return {
-        type: 'section',
-        data: section,
-        position: tooltipInfo?.position
-      };
-    });
-  }, [tooltipInfo]);
-
-  // Calculate section opacity based on selected cable
-  const getSectionOpacity = useCallback((section) => {
-    if (!selectedCable) return 1;
-    return section.cables.has(selectedCable) ? 1 : 0.2;
-  }, [selectedCable]);
-  // Tooltip content component
-  const TooltipContent = ({ info }) => {
-    if (info.type === 'section') {
-      const section = info.data;
-      return (
-        <>
-          <div className="mb-2">
-            <p className="font-medium text-gray-900 flex items-center gap-2">
-              <span 
-                className="w-3 h-3 rounded-full" 
-                style={{ backgroundColor: section.color }}
-              />
-              {section.function}
-              <span className="text-sm text-gray-500">
-                ({section.cables.size} cables)
-              </span>
-            </p>
-            {section.length && (
-              <p className="text-sm text-gray-600 mt-1">
-                Length: {section.length.toFixed(1)}m
-              </p>
-            )}
-          </div>
-          <div className="tooltip-scroll overflow-y-auto max-h-48">
-            <ul className="space-y-1">
-              {Array.from(section.cables).sort().map((cableName, index) => {
-                const cable = section.details.get(cableName);
-                if (!cable) return null;
-                return (
-                  <li key={`${cableName}-${index}`} className="text-sm text-gray-600">
-                    <div className="flex items-center">
-                      <span 
-                        className="w-2 h-2 rounded-full mr-2 flex-shrink-0"
-                        style={{ backgroundColor: section.color }}
-                      />
-                      <span className="font-medium">{cable.cableLabel}</span>
-                    </div>
-                    <div className="text-gray-500 text-xs ml-4 mt-0.5">
-                      {cable.source} → {cable.target}
-                    </div>
-                    {cable.diameter && (
-                      <div className="text-gray-500 text-xs ml-4">
-                        Ø {cable.diameter}
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        </>
-      );
-    }
-
-    if (info.type === 'machine') {
-      const machine = info.data;
-      return (
-        <>
-          <div className="mb-2">
-            <h3 className="font-medium text-gray-900">{machine.name}</h3>
-            {machine.description && (
-              <p className="text-sm text-gray-500 mt-1">{machine.description}</p>
-            )}
-            {machine.mergedMachines && machine.mergedMachines.length > 1 && (
-              <p className="text-xs text-gray-500 mt-1">
-                Merged: {machine.mergedMachines.join(', ')}
-              </p>
-            )}
-          </div>
-          <div className="tooltip-scroll overflow-y-auto max-h-48">
-            {machine.cables.sources.length > 0 && (
-              <div className="mb-3">
-                <h4 className="text-sm font-medium text-gray-700 mb-1">Source Cables:</h4>
-                <ul className="space-y-1">
-                  {machine.cables.sources.map((cable, index) => (
-                    <li key={`source-${cable.cableLabel}-${index}`} 
-                        className="text-sm text-gray-600 flex flex-col">
-                      <div className="flex items-center">
-                        <span 
-                          className="w-2 h-2 rounded-full mr-2 flex-shrink-0"
-                          style={{ backgroundColor: cable.color }}
-                        />
-                        <span className="font-medium">{cable.cableLabel}</span>
-                      </div>
-                      <div className="text-gray-500 text-xs ml-4">
-                        → {cable.target}
-                        {cable.diameter && ` (Ø ${cable.diameter})`}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {machine.cables.targets.length > 0 && (
-              <div>
-                <h4 className="text-sm font-medium text-gray-700 mb-1">Target Cables:</h4>
-                <ul className="space-y-1">
-                  {machine.cables.targets.map((cable, index) => (
-                    <li key={`target-${cable.cableLabel}-${index}`} 
-                        className="text-sm text-gray-600 flex flex-col">
-                      <div className="flex items-center">
-                        <span 
-                          className="w-2 h-2 rounded-full mr-2 flex-shrink-0"
-                          style={{ backgroundColor: cable.color }}
-                        />
-                        <span className="font-medium">{cable.cableLabel}</span>
-                      </div>
-                      <div className="text-gray-500 text-xs ml-4">
-                        {cable.source} →
-                        {cable.diameter && ` (Ø ${cable.diameter})`}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        </>
-      );
-    }
-
-    return null;
-  };
-  // Get machine cables for tooltips
-  const getMachineCables = useCallback((machineName) => {
-    if (!cables || !Array.isArray(cables)) return { sources: [], targets: [] };
-    return {
-      sources: cables.filter(cable => cable.source === machineName),
-      targets: cables.filter(cable => cable.target === machineName)
-    };
-  }, [cables]);
-
-  // Get unique networks and their info
-  const networkInfo = useMemo(() => {
-    const networks = new Map();
-    sections.forEach(section => {
-      if (!networks.has(section.function)) {
-        networks.set(section.function, {
-          type: section.function,
-          color: section.color,
-          cables: new Set()
-        });
+      if (selectedCable) {
+        return section.cables.has(selectedCable) ? 1 : 0.2;
       }
-      section.cables.forEach(cable => {
-        networks.get(section.function).cables.add(cable);
-      });
-    });
-    return Array.from(networks.values());
-  }, [sections]);
+      if (hoveredNetwork && section.function !== hoveredNetwork) {
+        return 0.2;
+      }
+      if (isHovered) {
+        return 1;
+      }
+      if (isNetworkHovered) {
+        return 0.8;
+      }
+      if (hoveredNetwork) {
+        return 0.4;
+      }
+      return 1;
+    }, [hoveredCable, selectedCable, hoveredNetwork]);
 
-  // Main render
-  return (
-    <div className="relative">
-      {/* Network Control Panel */}
-      <div className="absolute top-4 right-4 bg-white rounded-lg shadow-lg p-4 z-10">
-        <h3 className="text-sm font-medium text-gray-700 mb-2">Networks</h3>
-        <div className="space-y-2">
-          {networkInfo.map(network => (
-            <div
-              key={network.type}
-              className="flex items-center gap-2 px-2 py-1.5 rounded-md transition-all duration-150"
-              style={{
-                backgroundColor: hoveredNetwork === network.type ? `${network.color}15` : 'transparent',
-                transform: hoveredNetwork === network.type ? 'scale(1.02)' : 'scale(1)'
-              }}
-              onMouseEnter={() => setHoveredNetwork(network.type)}
-              onMouseLeave={() => setHoveredNetwork(null)}
-            >
-              <Switch
-                checked={networkVisibility[network.type] !== false}
-                onCheckedChange={(checked) => {
-                  const updatedVisibility = {
-                    ...networkVisibility,
-                    [network.type]: checked
-                  };
-                  onNetworkVisibilityChange(updatedVisibility);
-                }}
-                className="h-4 w-7"
-              />
-              <span 
-                className="w-3 h-3 rounded-full"
-                style={{ backgroundColor: network.color }}
-              />
-              <span className="text-sm text-gray-600">
-                {network.type}
-                <span className="text-gray-400 ml-1">
-                  ({network.cables.size})
+    // Info Panel Content component
+    const InfoPanelContent = ({ 
+      info, 
+      activeTab, 
+      setActiveTab, 
+      sourceCurrentPage, 
+      setSourceCurrentPage,
+      targetCurrentPage, 
+      setTargetCurrentPage 
+    }) => {
+      const CABLES_PER_PAGE = 8;
+
+      if (!info) {
+        return (
+          <div className="text-gray-500 text-sm flex items-center justify-center h-full">
+            Hover over a cable section or machine to see details
+          </div>
+        );
+      }
+
+      if (info.type === 'section') {
+        const section = info.data;
+        const sortedCables = Array.from(section.cables).sort();
+        const totalPages = Math.ceil(sortedCables.length / CABLES_PER_PAGE);
+        const startIndex = (sourceCurrentPage - 1) * CABLES_PER_PAGE;
+        const endIndex = startIndex + CABLES_PER_PAGE;
+        const currentCables = sortedCables.slice(startIndex, endIndex);
+
+        return (
+          <div className="flex flex-col h-full">
+            <div className="mb-4">
+              <p className="font-medium text-gray-900 flex items-center gap-2">
+                <span 
+                  className="w-3 h-3 rounded-full" 
+                  style={{ backgroundColor: section.color }}
+                />
+                {section.function}
+                <span className="text-sm text-gray-500">
+                  ({section.cables.size} cables)
                 </span>
-              </span>
+              </p>
+              {section.length && (
+                <p className="text-sm text-gray-600 mt-1">
+                  Length: {section.length.toFixed(1)}m
+                </p>
+              )}
             </div>
-          ))}
-        </div>
-      </div>
-
-      <svg
-        ref={svgRef}
-        width={CANVAS_SIZE}
-        height={CANVAS_SIZE}
-        className={`cable-tray-grid ${getCursorStyle()}`}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={() => {
-          handleMouseUp();
-          setDragPosition(null);
-          if (!activeTooltip) {
-            setTooltipInfo(null);
-          }
-        }}
-        onClick={handleClick}
-      >
-        {/* Grid Lines */}
-        {Array.from({ length: gridSize + 1 }).map((_, i) => (
-          <React.Fragment key={`grid-${i}`}>
-            <line
-              x1={0}
-              y1={i * cellSize}
-              x2={CANVAS_SIZE}
-              y2={i * cellSize}
-              stroke="#f0f0f0"
-              strokeWidth="0.5"
-            />
-            <line
-              x1={i * cellSize}
-              y1={0}
-              x2={i * cellSize}
-              y2={CANVAS_SIZE}
-              stroke="#f0f0f0"
-              strokeWidth="0.5"
-            />
-            {/* Add measurements every 10 cells (1 meter) */}
-            {i > 0 && i % 10 === 0 && (
-              <>
-                {/* Vertical measurement */}
-                <text
-                  x={2}
-                  y={i * cellSize - 2}
-                  className="text-xs fill-gray-400"
+            <div className="flex-1">
+              <ul className="space-y-1">
+                {currentCables.map((cableName, index) => {
+                  const cable = section.details.get(cableName);
+                  if (!cable) return null;
+                  return (
+                    <li 
+                      key={`${cableName}-${index}`} 
+                      className={`text-sm text-gray-600 p-1.5 rounded transition-colors ${
+                        hoveredCable === cableName ? 'bg-gray-100' : 'hover:bg-gray-50'
+                      }`}
+                      onMouseEnter={() => setHoveredCable(cableName)}
+                      onMouseLeave={() => setHoveredCable(null)}
+                    >
+                      <div className="flex items-center">
+                        <span 
+                          className="w-2 h-2 rounded-full mr-2 flex-shrink-0"
+                          style={{ backgroundColor: section.color }}
+                        />
+                        <span className="font-medium">{cable.cableLabel}</span>
+                      </div>
+                      <div className="text-gray-500 text-xs ml-4 mt-0.5">
+                        {cable.originalSource || cable.source}
+                        <br />
+                        {cable.originalTarget || cable.target}
+                        {cable.diameter && (
+                          <div>Ø {cable.diameter}</div>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+            {totalPages > 1 && (
+              <div className="mt-4 flex items-center justify-between border-t pt-4">
+                <button
+                  onClick={() => setSourceCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={sourceCurrentPage === 1}
+                  className={`px-2 py-1 text-sm rounded ${
+                    sourceCurrentPage === 1 
+                      ? 'text-gray-400 cursor-not-allowed' 
+                      : 'text-blue-600 hover:bg-blue-50'
+                  }`}
                 >
-                  {(i / 10).toFixed(1)}m
-                </text>
-                {/* Horizontal measurement */}
-                <text
-                  x={i * cellSize + 2}
-                  y={10}
-                  className="text-xs fill-gray-400"
+                  Previous
+                </button>
+                <span className="text-sm text-gray-600">
+                  Page {sourceCurrentPage} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setSourceCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  disabled={sourceCurrentPage === totalPages}
+                  className={`px-2 py-1 text-sm rounded ${
+                    sourceCurrentPage === totalPages 
+                      ? 'text-gray-400 cursor-not-allowed' 
+                      : 'text-blue-600 hover:bg-blue-50'
+                  }`}
                 >
-                  {(i / 10).toFixed(1)}m
-                </text>
-              </>
+                  Next
+                </button>
+              </div>
             )}
-          </React.Fragment>
-        ))}
+          </div>
+        );
+      }
 
-        {/* Scale indicator */}
-        <g transform={`translate(${CANVAS_SIZE - 120}, ${CANVAS_SIZE - 40})`}>
-          <rect
-            x={0}
-            y={0}
-            width={100}
-            height={30}
-            fill="white"
-            stroke="#e5e7eb"
-            rx={4}
-          />
-          <line
-            x1={10}
-            y1={20}
-            x2={90}
-            y2={20}
-            stroke="#9ca3af"
-            strokeWidth={2}
-            strokeLinecap="round"
-          />
-          <line
-            x1={10}
-            y1={15}
-            x2={10}
-            y2={25}
-            stroke="#9ca3af"
-            strokeWidth={2}
-          />
-          <line
-            x1={90}
-            y1={15}
-            x2={90}
-            y2={25}
-            stroke="#9ca3af"
-            strokeWidth={2}
-          />
-          <text
-            x={50}
-            y={15}
-            textAnchor="middle"
-            className="text-xs fill-gray-500"
-          >
-            1 meter
-          </text>
-        </g>
+      if (info.type === 'machine') {
+        const machine = info.data;
+        const totalSourcePages = Math.ceil(currentSourceCables.length / CABLES_PER_PAGE);
+        const totalTargetPages = Math.ceil(currentTargetCables.length / CABLES_PER_PAGE);
 
-        {/* Walls */}
-        {walls.map((wall, index) => (
-          <rect
-            key={`wall-${index}`}
-            x={wall.x * cellSize}
-            y={wall.y * cellSize}
-            width={cellSize}
-            height={cellSize}
-            fill="#374151"
-            className="opacity-80"
-          />
-        ))}
+        const displaySourceCables = currentSourceCables.slice(
+          (sourceCurrentPage - 1) * CABLES_PER_PAGE,
+          sourceCurrentPage * CABLES_PER_PAGE
+        );
+        
+        const displayTargetCables = currentTargetCables.slice(
+          (targetCurrentPage - 1) * CABLES_PER_PAGE,
+          targetCurrentPage * CABLES_PER_PAGE
+        );
 
-        {/* Preview Walls */}
-        {activeMode === EditorModes.WALL && previewWalls.length > 0 && (
-          <>
-            {/* Top line */}
-            <line
-              x1={Math.min(dragStart.x, dragEnd.x) * cellSize}
-              y1={Math.min(dragStart.y, dragEnd.y) * cellSize}
-              x2={(Math.max(dragStart.x, dragEnd.x) + 1) * cellSize}
-              y2={Math.min(dragStart.y, dragEnd.y) * cellSize}
-              stroke="#374151"
-              strokeWidth={2}
-              className="opacity-40"
-            />
-            {/* Bottom line */}
-            <line
-              x1={Math.min(dragStart.x, dragEnd.x) * cellSize}
-              y1={(Math.max(dragStart.y, dragEnd.y) + 1) * cellSize}
-              x2={(Math.max(dragStart.x, dragEnd.x) + 1) * cellSize}
-              y2={(Math.max(dragStart.y, dragEnd.y) + 1) * cellSize}
-              stroke="#374151"
-              strokeWidth={2}
-              className="opacity-40"
-            />
-            {/* Left line */}
-            <line
-              x1={Math.min(dragStart.x, dragEnd.x) * cellSize}
-              y1={Math.min(dragStart.y, dragEnd.y) * cellSize}
-              x2={Math.min(dragStart.x, dragEnd.x) * cellSize}
-              y2={(Math.max(dragStart.y, dragEnd.y) + 1) * cellSize}
-              stroke="#374151"
-              strokeWidth={2}
-              className="opacity-40"
-            />
-            {/* Right line */}
-            <line
-              x1={(Math.max(dragStart.x, dragEnd.x) + 1) * cellSize}
-              y1={Math.min(dragStart.y, dragEnd.y) * cellSize}
-              x2={(Math.max(dragStart.x, dragEnd.x) + 1) * cellSize}
-              y2={(Math.max(dragStart.y, dragEnd.y) + 1) * cellSize}
-              stroke="#374151"
-              strokeWidth={2}
-              className="opacity-40"
-            />
-          </>
-        )}
+        return (
+          <div className="flex flex-col h-full">
+            <div className="mb-4">
+              <h3 className="font-medium text-gray-900">{machine.mergedName}</h3>
+              {machine.description && (
+                <p className="text-sm text-gray-500 mt-1">{machine.description}</p>
+              )}
+              {machine.mergedHistory && Object.keys(machine.mergedHistory).length > 1 && (
+                <div className="mt-2 p-2 bg-gray-50 rounded-md">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                    <p className="text-xs text-gray-500 font-medium">Inherited Machines</p>
+                  </div>
+                  <div className="mt-1 space-y-1">
+                    {Object.keys(machine.mergedHistory).map((machineName, index) => (
+                      <div key={machineName} className="flex items-center gap-2 text-sm">
+                        <span className="text-gray-400">{index + 1}.</span>
+                        <span className="text-gray-600">{machineName}</span>
+                        {index === 0 && (
+                          <span className="text-xs text-gray-400 ml-1">(primary)</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
 
-        {isDragging && activeMode === EditorModes.WALL && dragStart && dragEnd && (
-          <text
-            x={(dragStart.x + dragEnd.x) / 2 * cellSize}
-            y={(dragStart.y + dragEnd.y) / 2 * cellSize - 10}
-            className="text-xs fill-gray-500"
-            textAnchor="middle"
-          >
-            {(Math.abs(dragEnd.x - dragStart.x) * 0.1).toFixed(2)}m x {(Math.abs(dragEnd.y - dragStart.y) * 0.1).toFixed(2)}m
-          </text>
-        )}
-
-        {/* Perforations */}
-        {perforations.map((perf, index) => (
-          <circle
-            key={`perf-${index}`}
-            cx={(perf.x + 0.5) * cellSize}
-            cy={(perf.y + 0.5) * cellSize}
-            r={cellSize * 0.3}
-            fill="#fbbf24"
-            className="opacity-80"
-          />
-        ))}
-
-        {/* Cable Sections with measurements */}
-        {processedSections.map((section, index) => {
-          const { points, cables, color, function: networkType } = section;
-          
-          // Calculate opacity based on network highlighting and visibility
-          let opacity = networkVisibility[networkType] ? 1 : 0;
-          if (hoveredNetwork) {
-            opacity = networkType === hoveredNetwork ? 1 : 0.2;
-          }
-          if (selectedCable && !cables.has(selectedCable)) {
-            opacity *= 0.25;
-          }
-
-          // Skip rendering completely hidden sections
-          if (opacity === 0) return null;
-
-          // Create path from all points
-          const pathD = `M ${points[0].x * cellSize} ${points[0].y * cellSize} ` +
-                        points.slice(1).map(p => `L ${p.x * cellSize} ${p.y * cellSize}`).join(' ');
-          
-          // Calculate total length along the path
-          const lengthInMeters = points.reduce((total, point, i) => {
-            if (i === 0) return 0;
-            const prev = points[i - 1];
-            const dx = point.x - prev.x;
-            const dy = point.y - prev.y;
-            return total + Math.sqrt(dx * dx + dy * dy) * 0.1;
-          }, 0);
-          
-          // Calculate stroke width based on number of cables
-          const strokeWidth = Math.min(2 + cables.size * 2, 16);
-          
-          // Handle highlighting
-          const isHighlighted = selectedCable && cables.has(selectedCable);
-          const isHovered = hoveredSegmentKey === index;
-          
-          return (
-            <g 
-              key={section.key}
-              style={{ opacity }}
-              onMouseEnter={(e) => {
-                setHoveredSegmentKey(index);
-                handleSectionHover(index, section, e, lengthInMeters);
-              }}
-              onMouseLeave={() => {
-                setHoveredSegmentKey(null);
-                handleSectionHover(null, null);
-              }}
-              onClick={() => handleSectionClick(section)}
-              onDoubleClick={() => {
-                const cablesWithDetails = Array.from(section.details.values()).map(cable => {
-                  // Find the network for this cable
-                  const network = networks.find(n => n.functions.includes(cable.cableFunction));
-                  return {
-                    ...cable,
-                    diameter: cable.diameter,
-                    function: cable.cableFunction,
-                    type: network?.name || 'Unknown',
-                    network: network?.name || 'Unknown',
-                    color: network?.color || '#999999'
-                  };
-                });
-                setSelectedSectionCables(cablesWithDetails);
-                setSimulationOpen(true);
-              }}
-            >
-              {/* Shadow effect */}
-              <path
-                d={pathD}
-                stroke="rgba(0,0,0,0.1)"
-                strokeWidth={(isHovered ? strokeWidth + 4 : strokeWidth + 2)}
-                strokeLinecap="round"
-                fill="none"
-                transform="translate(1, 1)"
-              />
-              {/* Main path */}
-              <path
-                d={pathD}
-                stroke={color}
-                strokeWidth={isHovered ? strokeWidth + 2 : strokeWidth}
-                strokeOpacity={isHovered ? 1 : 0.8}
-                fill="none"
-                className="cable-path"
-                strokeLinecap="round"
-                style={{
-                  transition: 'stroke-width 0.15s ease-in-out, stroke-opacity 0.15s ease-in-out',
-                  zIndex: networkType === 'power' ? 1 : 2  // Control network renders on top of power
+            <div className="flex border-b mb-4">
+              <button
+                className={`px-4 py-2 text-sm font-medium border-b-2 ${
+                  activeTab === 'sources'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+                onClick={() => {
+                  setActiveTab('sources');
                 }}
+              >
+                Sources ({currentSourceCables.length})
+              </button>
+              <button
+                className={`px-4 py-2 text-sm font-medium border-b-2 ${
+                  activeTab === 'targets'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+                onClick={() => {
+                  setActiveTab('targets');
+                }}
+              >
+                Targets ({currentTargetCables.length})
+              </button>
+            </div>
+
+            <div className="flex-1">
+              {activeTab === 'sources' ? (
+                <>
+                  <ul className="space-y-1">
+                    {displaySourceCables.map((cable, index) => (
+                      <li 
+                        key={`source-${cable.cableLabel}-${index}`} 
+                        className={`text-sm text-gray-600 flex flex-col p-1.5 rounded transition-colors ${
+                          hoveredCable === cable.cableLabel ? 'bg-gray-100' : 'hover:bg-gray-50'
+                        }`}
+                        onMouseEnter={() => {
+                          setHoveredCable(cable.cableLabel);
+                        }}
+                        onMouseLeave={() => {
+                          setHoveredCable(null);
+                        }}
+                      >
+                        <div className="flex items-center">
+                          <span 
+                            className="w-2 h-2 rounded-full mr-2 flex-shrink-0"
+                            style={{ backgroundColor: cable.color }}
+                          />
+                          <span className="font-medium">{cable.cableLabel}</span>
+                        </div>
+                        <div className="text-gray-500 text-xs ml-4">
+                          From: {cable.originalSource || cable.source}
+                          <br />
+                          To: {cable.originalTarget || cable.target}
+                          {cable.diameter && (
+                            <div>Ø {cable.diameter}</div>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {totalSourcePages > 1 && (
+                    <div className="mt-4 flex items-center justify-between border-t pt-4">
+                      <button
+                        onClick={() => setSourceCurrentPage(prev => Math.max(1, prev - 1))}
+                        disabled={sourceCurrentPage === 1}
+                        className={`px-2 py-1 text-sm rounded ${
+                          sourceCurrentPage === 1 
+                            ? 'text-gray-400 cursor-not-allowed' 
+                            : 'text-blue-600 hover:bg-blue-50'
+                        }`}
+                      >
+                        Previous
+                      </button>
+                      <span className="text-sm text-gray-600">
+                        Page {sourceCurrentPage} of {totalSourcePages}
+                      </span>
+                      <button
+                        onClick={() => setSourceCurrentPage(prev => Math.min(totalSourcePages, prev + 1))}
+                        disabled={sourceCurrentPage === totalSourcePages}
+                        className={`px-2 py-1 text-sm rounded ${
+                          sourceCurrentPage === totalSourcePages 
+                            ? 'text-gray-400 cursor-not-allowed' 
+                            : 'text-blue-600 hover:bg-blue-50'
+                        }`}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <ul className="space-y-1">
+                    {displayTargetCables.map((cable, index) => (
+                      <li 
+                        key={`target-${cable.cableLabel}-${index}`} 
+                        className={`text-sm text-gray-600 flex flex-col p-1.5 rounded transition-colors ${
+                          hoveredCable === cable.cableLabel ? 'bg-gray-100' : 'hover:bg-gray-50'
+                        }`}
+                        onMouseEnter={() => setHoveredCable(cable.cableLabel)}
+                        onMouseLeave={() => setHoveredCable(null)}
+                      >
+                        <div className="flex items-center">
+                          <span 
+                            className="w-2 h-2 rounded-full mr-2 flex-shrink-0"
+                            style={{ backgroundColor: cable.color }}
+                          />
+                          <span className="font-medium">{cable.cableLabel}</span>
+                        </div>
+                        <div className="text-gray-500 text-xs ml-4">
+                          From: {cable.originalSource || cable.source}
+                          <br />
+                          To: {cable.originalTarget || cable.target}
+                          {cable.diameter && (
+                            <div>Ø {cable.diameter}</div>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {totalTargetPages > 1 && (
+                    <div className="mt-4 flex items-center justify-between border-t pt-4">
+                      <button
+                        onClick={() => setTargetCurrentPage(prev => Math.max(1, prev - 1))}
+                        disabled={targetCurrentPage === 1}
+                        className={`px-2 py-1 text-sm rounded ${
+                          targetCurrentPage === 1 
+                            ? 'text-gray-400 cursor-not-allowed' 
+                            : 'text-blue-600 hover:bg-blue-50'
+                        }`}
+                      >
+                        Previous
+                      </button>
+                      <span className="text-sm text-gray-600">
+                        Page {targetCurrentPage} of {totalTargetPages}
+                      </span>
+                      <button
+                        onClick={() => setTargetCurrentPage(prev => Math.min(totalTargetPages, prev + 1))}
+                        disabled={targetCurrentPage === totalTargetPages}
+                        className={`px-2 py-1 text-sm rounded ${
+                          targetCurrentPage === totalTargetPages 
+                            ? 'text-gray-400 cursor-not-allowed' 
+                            : 'text-blue-600 hover:bg-blue-50'
+                        }`}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      return null;
+    };
+
+    // Get machine cables for tooltips
+    const getMachineCables = useCallback((machineName) => {
+      if (!cables || !Array.isArray(cables)) return { sources: [], targets: [] };
+      return {
+        sources: cables.filter(cable => cable.source === machineName),
+        targets: cables.filter(cable => cable.target === machineName)
+      };
+    }, [cables]);
+
+    // Get unique networks and their info
+    const networkInfo = useMemo(() => {
+      const networks = new Map();
+      sections.forEach(section => {
+        if (!networks.has(section.function)) {
+          networks.set(section.function, {
+            type: section.function,
+            color: section.color,
+            cables: new Set()
+          });
+        }
+        section.cables.forEach(cable => {
+          networks.get(section.function).cables.add(cable);
+        });
+      });
+      return Array.from(networks.values());
+    }, [sections]);
+
+    const handleMachineClick = useCallback((name, powerCables, controlCables, mergedHistory) => {
+      if (inheritMode.active) {
+        if (name !== inheritMode.targetMachine) {
+          onMachineInherit(inheritMode.targetMachine, name);
+          setInheritMode({ active: false, targetMachine: null });
+        }
+        return;
+      }
+
+      const machineInfo = {
+        type: 'machine',
+        data: {
+          name,
+          mergedName: getMergedMachineName(name, machines[name]),
+          description: machines[name]?.description,
+          mergedHistory,
+          cables: {
+            sources: [...powerCables, ...controlCables].filter(cable => 
+              Object.keys(mergedHistory).includes(cable.source) || 
+              Object.keys(mergedHistory).includes(cable.originalSource)
+            ),
+            targets: [...powerCables, ...controlCables].filter(cable => 
+              Object.keys(mergedHistory).includes(cable.target) || 
+              Object.keys(mergedHistory).includes(cable.originalTarget)
+            )
+          }
+        }
+      };
+      setSelectedElement(prev => 
+        prev?.data?.name === name ? null : machineInfo
+      );
+    }, [inheritMode, onMachineInherit, machines]);
+
+    // Add this near the top of the component with other event handlers
+    const handleContextMenu = useCallback((e, machineName) => {
+      e.preventDefault();
+      const rect = svgRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      setContextMenu({ show: true, x, y, machine: machineName });
+    }, []);
+
+    // Add this near the top of the component with other event handlers
+    const handleStartMachineMove = useCallback((machineName) => {
+      setMoveMode({ active: true, machine: machineName });
+      setContextMenu({ show: false, x: 0, y: 0, machine: null });
+    }, []);
+
+    // Add this near the top of the component with other event handlers
+    const handleRemoveMachine = useCallback((machineName) => {
+      // We'll implement this in LayoutEditor
+      if (onMachineRemove) {
+        onMachineRemove(machineName);
+      }
+      setContextMenu({ show: false, x: 0, y: 0, machine: null });
+    }, [onMachineRemove]);
+
+    // Add this useEffect in the main LayoutGrid component, before the InfoPanelContent definition
+    useEffect(() => {
+      if (!selectedElement || selectedElement.type !== 'machine' || !cables) return;
+
+      const machine = selectedElement.data;
+      const mergedMachineNames = Object.keys(machine.mergedHistory || {});
+
+      // Get all cables that connect to this machine or any of its inherited machines
+      const sourceCables = cables.filter(cable => {
+        return mergedMachineNames.includes(cable.source) || 
+               mergedMachineNames.includes(cable.originalSource);
+      });
+
+      const targetCables = cables.filter(cable => {
+        return mergedMachineNames.includes(cable.target) || 
+               mergedMachineNames.includes(cable.originalTarget);
+      });
+
+      setCurrentSourceCables(sourceCables);
+      setCurrentTargetCables(targetCables);
+      
+      // Only reset pagination when selecting a new machine, not when hovering cables
+      if (selectedElement !== prevSelectedElement.current) {
+        setSourceCurrentPage(1);
+        setTargetCurrentPage(1);
+        setActiveTab('sources');
+      }
+      
+      prevSelectedElement.current = selectedElement;
+    }, [selectedElement, cables]);
+
+    // Main render
+    return (
+      <div className="flex gap-4">
+        <div 
+          className="relative"
+          style={{ width: `${width}px`, height: `${height}px` }}
+        >
+          {/* Network Legend */}
+          <div className="absolute top-4 right-4 bg-white rounded-lg shadow-sm p-2 z-10">
+            <div className="space-y-2">
+              {networkInfo.map((network) => (
+                <div 
+                  key={network.type} 
+                  className={`flex items-center gap-2 p-1.5 rounded transition-colors ${
+                    hoveredNetwork === network.type ? 'bg-gray-100' : 'hover:bg-gray-50'
+                  }`}
+                  onMouseEnter={() => setHoveredNetwork(network.type)}
+                  onMouseLeave={() => setHoveredNetwork(null)}
+                >
+                  <Switch
+                    checked={networkVisibility[network.type] !== false}
+                    onCheckedChange={(checked) => {
+                      onNetworkVisibilityChange({
+                        ...networkVisibility,
+                        [network.type]: checked
+                      });
+                    }}
+                  />
+                  <div className="flex items-center gap-2">
+                    <div
+                      className={`w-3 h-3 rounded-full transition-transform ${
+                        hoveredNetwork === network.type ? 'scale-125' : ''
+                      }`}
+                      style={{ backgroundColor: network.color }}
+                    />
+                    <span className={`text-sm ${
+                      hoveredNetwork === network.type ? 'font-medium' : ''
+                    }`}>{network.type}</span>
+                    <span className="text-xs text-gray-500">
+                      ({network.cables.size} cables)
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <svg
+            ref={svgRef}
+            width={width}
+            height={height}
+            viewBox={`0 0 ${width} ${height}`}
+            className={`cable-tray-grid ${getCursorStyle()}`}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={() => {
+              handleMouseUp();
+              setDragPosition(null);
+              if (!selectedElement) {
+                setHoveredElement(null);
+              }
+            }}
+            onClick={handleClick}
+          >
+            {/* Background image if exists */}
+            {imageUrl && (
+              <image
+                href={imageUrl}
+                width={width}
+                height={height}
+                preserveAspectRatio="xMidYMid meet"
+                opacity="0.5"
               />
-            </g>
-          );
-        })}
+            )}
 
-        {/* Machine Preview */}
-        {activeMode === EditorModes.MACHINE && selectedMachine && dragPosition && !draggedMachine && (
-          <g className="opacity-50">
-            <circle
-              cx={dragPosition.x * cellSize}
-              cy={dragPosition.y * cellSize}
-              r={cellSize * 0.4}
-              fill="#10b981"
-              stroke="white"
-              strokeWidth={2}
-            />
-            <MachineLabelComponent
-              name={selectedMachine.name}
-              pos={dragPosition}
-              cellSize={cellSize}
-              svgRef={svgRef}
-            />
-          </g>
-        )}
+            {/* Grid Lines */}
+            {Array.from({ length: gridSize + 1 }).map((_, i) => (
+              <React.Fragment key={`grid-${i}`}>
+                <line
+                  x1={0}
+                  y1={i * cellSize}
+                  x2={width}
+                  y2={i * cellSize}
+                  stroke="#f0f0f0"
+                  strokeWidth="0.5"
+                />
+                <line
+                  x1={i * cellSize}
+                  y1={0}
+                  x2={i * cellSize}
+                  y2={height}
+                  stroke="#f0f0f0"
+                  strokeWidth="0.5"
+                />
+                {/* Add measurements every 10 cells (1 meter) */}
+                {i > 0 && i % 10 === 0 && (
+                  <>
+                    {/* Vertical measurement */}
+                    <text
+                      x={2}
+                      y={i * cellSize - 2}
+                      className="text-xs fill-gray-400"
+                    >
+                      {(i / 10).toFixed(1)}m
+                    </text>
+                    {/* Horizontal measurement */}
+                    <text
+                      x={i * cellSize + 2}
+                      y={10}
+                      className="text-xs fill-gray-400"
+                    >
+                      {(i / 10).toFixed(1)}m
+                    </text>
+                  </>
+                )}
+              </React.Fragment>
+            ))}
 
-        {/* Machines */}
-        {Object.entries(machines).map(([name, pos]) => {
-          const machineCables = getMachineCables(name);
-          return (
-            <g 
-              key={name}
-              className={`machine-node transition-transform ${draggedMachine === name ? 'opacity-50' : ''}`}
-              draggable="true"
-              onDragStart={(e) => handleMachineDragStart(e, name)}
-              onDragEnd={handleMachineDragEnd}
-              onMouseEnter={(e) => {
-                const svgRect = svgRef.current?.getBoundingClientRect();
-                setTooltipInfo({
-                  type: 'machine',
-                  data: {
-                    name,
-                    description: pos.description,
-                    mergedMachines: pos.mergedMachines,
-                    cables: machineCables
-                  },
-                  position: {
-                    x: e.clientX - svgRect.left,
-                    y: e.clientY - svgRect.top
-                  }
-                });
-              }}
-              onMouseLeave={() => {
-                if (!activeTooltip) {
-                  setTooltipInfo(null);
-                }
-              }}
-              onClick={() => {
-                setActiveTooltip(prev => prev?.data?.name === name ? null : {
-                  type: 'machine',
-                  data: {
-                    name,
-                    description: pos.description,
-                    mergedMachines: pos.mergedMachines,
-                    cables: machineCables
-                  },
-                  position: tooltipInfo?.position
-                });
-              }}
-            >
-              <circle
-                cx={pos.x * cellSize}
-                cy={pos.y * cellSize}
-                r={cellSize * 0.4}
-                fill={draggedMachine === name ? "#9333ea" : "#10b981"}
-                stroke="white"
+            {/* Scale indicator */}
+            <g transform={`translate(${width - 120}, ${height - 40})`}>
+              <rect
+                x={0}
+                y={0}
+                width={100}
+                height={30}
+                fill="white"
+                stroke="#e5e7eb"
+                rx={4}
+              />
+              <line
+                x1={10}
+                y1={20}
+                x2={90}
+                y2={20}
+                stroke="#9ca3af"
+                strokeWidth={2}
+                strokeLinecap="round"
+              />
+              <line
+                x1={10}
+                y1={15}
+                x2={10}
+                y2={25}
+                stroke="#9ca3af"
                 strokeWidth={2}
               />
-              <MachineLabelComponent
-                name={name}
-                pos={{ x: pos.x, y: pos.y }}
-                cellSize={cellSize}
-                svgRef={svgRef}
+              <line
+                x1={90}
+                y1={15}
+                x2={90}
+                y2={25}
+                stroke="#9ca3af"
+                strokeWidth={2}
               />
+              <text
+                x={50}
+                y={15}
+                textAnchor="middle"
+                className="text-xs fill-gray-500"
+              >
+                1 meter
+              </text>
             </g>
-          );
-        })}
-      </svg>
 
-      {/* Enhanced tooltip */}
-      {(tooltipInfo || activeTooltip) && (
-        <div
-          ref={tooltipRef}
-          className="absolute bg-white p-3 rounded-lg shadow-lg border border-gray-200 z-10"
-          style={{
-            left: (activeTooltip || tooltipInfo).position.x + 10,
-            top: (activeTooltip || tooltipInfo).position.y - 10,
-            transform: 'translate(0, -100%)',
-            minWidth: '250px',
-            maxWidth: '400px'
-          }}
-        >
-          {activeTooltip && (
-            <button
-              className="absolute top-2 right-2 text-gray-400 hover:text-gray-600"
-              onClick={() => setActiveTooltip(null)}
-            >
-              ×
-            </button>
-          )}
-          <TooltipContent info={activeTooltip || tooltipInfo} />
+            {/* Walls */}
+            {walls.map(wall => (
+              <rect
+                key={`wall-${wall.x}-${wall.y}`}
+                x={wall.x * cellSize}
+                y={wall.y * cellSize}
+                width={cellSize}
+                height={cellSize}
+                fill="#4b5563"
+              />
+            ))}
+
+            {/* Perforations */}
+            {perforations.map(perf => (
+              <circle
+                key={`perf-${perf.x}-${perf.y}`}
+                cx={perf.x * cellSize + cellSize / 2}
+                cy={perf.y * cellSize + cellSize / 2}
+                r={cellSize / 4}
+                fill="#ef4444"
+              />
+            ))}
+
+            {/* Cable Sections */}
+            {processedSections.map((section) => {
+              const points = section.points;
+              if (points.length < 2) return null;
+
+              let pathD = '';
+              points.forEach((point, i) => {
+                pathD += `${i === 0 ? 'M' : 'L'} ${point.x * cellSize + cellSize/2} ${point.y * cellSize + cellSize/2} `;
+              });
+
+              const cableCount = section.cables.size;
+              const strokeWidth = Math.min(4 + cableCount * 2, 16);
+              const isHighlighted = selectedCable && section.cables.has(selectedCable);
+              const isVisible = networkVisibility[section.function] !== false;
+              const isHovered = hoveredElement?.data === section || selectedElement?.data === section;
+              const isNetworkHovered = hoveredNetwork === section.function;
+
+              // Skip rendering if network is not visible
+              if (!isVisible) return null;
+
+              return (
+                <g 
+                  key={section.key} 
+                  opacity={getSectionOpacity(section, isHovered, isNetworkHovered)}
+                >
+                  {/* Shadow effect */}
+                  <path
+                    d={pathD}
+                    stroke="rgba(0,0,0,0.1)"
+                    strokeWidth={strokeWidth + 2}
+                    strokeLinecap="round"
+                    fill="none"
+                    transform="translate(1, 1)"
+                  />
+                  {/* Main path */}
+                  <path
+                    d={pathD}
+                    stroke={section.color}
+                    strokeWidth={isHovered ? strokeWidth + 4 : isNetworkHovered ? strokeWidth + 2 : strokeWidth}
+                    strokeOpacity={isHovered ? 1 : isNetworkHovered ? 0.9 : 0.8}
+                    fill="none"
+                    className="cable-path"
+                    strokeLinecap="round"
+                    onClick={() => handleSectionClick(section)}
+                    onMouseEnter={(e) => {
+                      if (!selectedElement) {
+                        setHoveredElement({
+                          type: 'section',
+                          data: section
+                        });
+                      }
+                    }}
+                    onMouseLeave={() => {
+                      if (!selectedElement) {
+                        setHoveredElement(null);
+                      }
+                    }}
+                    style={{ 
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease-in-out',
+                      strokeWidth: isHovered ? strokeWidth + 4 : isNetworkHovered ? strokeWidth + 2 : strokeWidth
+                    }}
+                  />
+                </g>
+              );
+            })}
+
+            {/* Machines */}
+            {machines && Object.entries(machines).map(([name, machine]) => {
+              if (!machine) return null;
+              
+              // Get all machine names (current and merged) to find all related cables
+              const allMergedMachines = machine.mergedHistory ? Object.keys(machine.mergedHistory) : [name];
+              
+              // Find all cables that connect to any of the merged machines
+              const connectedCables = cables.filter(cable => {
+                const sourceMatches = allMergedMachines.includes(cable.source) || allMergedMachines.includes(cable.originalSource);
+                const targetMatches = allMergedMachines.includes(cable.target) || allMergedMachines.includes(cable.originalTarget);
+                return sourceMatches || targetMatches;
+              }).sort((a, b) => a.cableLabel.localeCompare(b.cableLabel));
+
+              // Split cables into sources and targets based on original and current connections
+              const powerCables = connectedCables
+                .filter(cable => cable.type === 'power')
+                .map(cable => ({
+                  ...cable,
+                  displaySource: cable.originalSource || cable.source,
+                  displayTarget: cable.originalTarget || cable.target
+                }));
+
+              const controlCables = connectedCables
+                .filter(cable => cable.type === 'control')
+                .map(cable => ({
+                  ...cable,
+                  displaySource: cable.originalSource || cable.source,
+                  displayTarget: cable.originalTarget || cable.target
+                }));
+
+              // Split into sources and targets for the info panel
+              const sourceCables = powerCables.filter(cable => 
+                allMergedMachines.includes(cable.source) || allMergedMachines.includes(cable.originalSource)
+              );
+
+              const targetCables = powerCables.filter(cable => 
+                allMergedMachines.includes(cable.target) || allMergedMachines.includes(cable.originalTarget)
+              );
+
+              const controlSourceCables = controlCables.filter(cable => 
+                allMergedMachines.includes(cable.source) || allMergedMachines.includes(cable.originalSource)
+              );
+
+              const controlTargetCables = controlCables.filter(cable => 
+                allMergedMachines.includes(cable.target) || allMergedMachines.includes(cable.originalTarget)
+              );
+
+              const centerX = ((machine.x || 0) * cellSize) + (cellSize / 2);
+              const centerY = ((machine.y || 0) * cellSize) + (cellSize / 2);
+              const mergedName = getMergedMachineName(name, machine);
+              const isInheritTarget = inheritMode.active && name !== inheritMode.targetMachine;
+
+              return (
+                <g 
+                  key={name}
+                  onClick={() => handleMachineClick(name, [...sourceCables, ...controlSourceCables], [...targetCables, ...controlTargetCables], machine.mergedHistory)}
+                  onContextMenu={(e) => handleContextMenu(e, name)}
+                  className={`transition-opacity duration-200 ${
+                    inheritMode.active && name === inheritMode.targetMachine ? 'opacity-50' : ''
+                  }`}
+                  style={{ 
+                    cursor: isInheritTarget ? 'copy' : 'pointer',
+                    opacity: inheritMode.active && !isInheritTarget ? 0.5 : 1
+                  }}
+                >
+                  {/* Machine point shadow */}
+                  <circle
+                    cx={centerX + 1}
+                    cy={centerY + 1}
+                    r={6}
+                    fill="rgba(0,0,0,0.1)"
+                  />
+                  {/* Machine point */}
+                  <circle
+                    cx={centerX}
+                    cy={centerY}
+                    r={6}
+                    fill={isInheritTarget ? '#3b82f6' : hoveredElement?.data?.name === name || selectedElement?.data?.name === name ? '#0ea5e9' : '#10b981'}
+                    stroke="white"
+                    strokeWidth={2}
+                  />
+                  {/* Machine label */}
+                  <text
+                    x={centerX}
+                    y={centerY - 12}
+                    textAnchor="middle"
+                    className="cable-machine"
+                  >
+                    {mergedName}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* Context Menu */}
+            {contextMenu.show && (
+              <foreignObject
+                x={contextMenu.x}
+                y={contextMenu.y}
+                width={160}
+                height={120}
+                style={{ overflow: 'visible' }}
+              >
+                <div 
+                  className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
+                  style={{ width: '160px' }}
+                >
+                  <button
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                    onClick={() => handleStartMachineMove(contextMenu.machine)}
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 15v4c0 1.1.9 2 2 2h4M21 9V5c0-1.1-.9-2-2-2h-4m0 0L19 7M5 5l4 4M5 19l4-4m6 4l4-4"/>
+                    </svg>
+                    Move
+                  </button>
+                  <button
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                    onClick={() => {
+                      setInheritMode({ active: true, targetMachine: contextMenu.machine });
+                      setContextMenu({ show: false, x: 0, y: 0, machine: null });
+                    }}
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                    Inherit From...
+                  </button>
+                  <button
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 text-red-600 flex items-center gap-2"
+                    onClick={() => handleRemoveMachine(contextMenu.machine)}
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                    </svg>
+                    Remove
+                  </button>
+                </div>
+              </foreignObject>
+            )}
+          </svg>
         </div>
-      )}
 
-      <CableTraySimulation
-        cables={selectedSectionCables}
-        networks={networks}
-        isOpen={simulationOpen}
-        onClose={() => setSimulationOpen(false)}
-      />
-    </div>
-  );
+        {/* Info Panel */}
+        <div className="w-80 bg-white rounded-lg shadow-sm p-4 flex flex-col h-[600px]">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-medium text-gray-900">
+              {selectedElement ? 'Selected Details' : 'Details'}
+            </h3>
+            {selectedElement && (
+              <button
+                onClick={() => setSelectedElement(null)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <InfoPanelContent 
+            info={selectedElement || hoveredElement} 
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            sourceCurrentPage={sourceCurrentPage}
+            setSourceCurrentPage={setSourceCurrentPage}
+            targetCurrentPage={targetCurrentPage}
+            setTargetCurrentPage={setTargetCurrentPage}
+          />
+        </div>
+
+        {showTraySimulation && selectedSectionForSimulation && (
+          <CableTraySimulation
+            cables={Array.from(selectedSectionForSimulation.cables).map(cableId => {
+              const details = selectedSectionForSimulation.details.get(cableId);
+              return {
+                ...details,
+                cableLabel: cableId,
+                type: selectedSectionForSimulation.function,
+                color: selectedSectionForSimulation.color
+              };
+            })}
+            networks={networks}
+            isOpen={showTraySimulation}
+            onClose={() => {
+              setShowTraySimulation(false);
+              setSelectedSectionForSimulation(null);
+            }}
+          />
+        )}
+
+        {/* Inheritance Menu Modal */}
+        {showInheritMenu && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-lg p-4 w-96">
+              <h3 className="text-lg font-medium mb-4">Inherit From Machine</h3>
+              <div className="max-h-64 overflow-y-auto space-y-2">
+                {Object.entries(machines)
+                  .filter(([name]) => name !== inheritFromMachine)
+                  .map(([name, machine]) => (
+                    <button
+                      key={name}
+                      className="w-full p-3 text-left hover:bg-gray-50 rounded-md flex items-center gap-3 border"
+                      onClick={() => {
+                        onMachineInherit(inheritFromMachine, name);
+                        setShowInheritMenu(false);
+                        setInheritFromMachine(null);
+                      }}
+                    >
+                      <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white font-medium">
+                        {name}
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="font-medium">{name}</span>
+                        {machine.description && (
+                          <span className="text-sm text-gray-500">{machine.description}</span>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+                  onClick={() => {
+                    setShowInheritMenu(false);
+                    setInheritFromMachine(null);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {inheritMode.active && (
+          <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
+            <span>Click on a machine to inherit from it</span>
+            <button
+              className="ml-2 hover:text-blue-200"
+              onClick={() => setInheritMode({ active: false, targetMachine: null })}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+    );
+};
+
+LayoutGrid.propTypes = {
+  gridSize: PropTypes.number.isRequired,
+  cellSize: PropTypes.number.isRequired,
+  walls: PropTypes.arrayOf(PropTypes.shape({
+    x: PropTypes.number,
+    y: PropTypes.number
+  })),
+  perforations: PropTypes.arrayOf(PropTypes.shape({
+    x: PropTypes.number,
+    y: PropTypes.number
+  })),
+  machines: PropTypes.object,
+  cables: PropTypes.array,
+  networks: PropTypes.array,
+  networkVisibility: PropTypes.object,
+  activeMode: PropTypes.string,
+  selectedMachine: PropTypes.object,
+  selectedCable: PropTypes.string,
+  onWallAdd: PropTypes.func.isRequired,
+  onPerforationAdd: PropTypes.func.isRequired,
+  onMachinePlace: PropTypes.func.isRequired,
+  onMachineMove: PropTypes.func.isRequired,
+  onMachineRemove: PropTypes.func.isRequired,
+  onNetworkVisibilityChange: PropTypes.func.isRequired,
+  onMachineInherit: PropTypes.func.isRequired,
+  backgroundImage: PropTypes.object
 };
 
 export default LayoutGrid;
