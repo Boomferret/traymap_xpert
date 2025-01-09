@@ -1,888 +1,510 @@
-const MinHeap = require('heap'); // Priority queue library
+/*****************************************************
+ *  CABLE UTILS - VERSIÓN OPTIMIZADA
+ *  ------------------------------------------------
+ *  Implementación del algoritmo de Steiner rectilíneo
+ *  basado en el paper "Faster Approximation Algorithms 
+ *  for the Rectilinear Steiner Tree Problem"
+ * 
+ *  Incluye:
+ *   1) Helpers geométricos y misceláneos
+ *   2) Implementación de Estrellas (Stars)
+ *   3) Router optimizado de Steiner
+ *   4) Manejo de secciones y merging
+ *   5) Utils y conexión final
+ *   6) Función principal optimizeNetworkPaths
+ *****************************************************/
 
-// Calculate how much new tray would be needed for this path
-const calculateNewTraySections = (newPath, existingPaths, sections = new Map()) => {
-  let score = 0;
-  
-  for (let i = 0; i < newPath.length - 1; i++) {
-    const start = newPath[i];
-    const end = newPath[i + 1];
-    
-    // Check if this segment follows an existing path in same network
-    const followsExisting = Array.from(existingPaths.values()).some(path => 
-      pathContainsSegment(path, start, end)
-    );
+// Importamos heap para la cola de prioridad
+const MinHeap = require('heap');
 
-    // Check if this segment follows a path from other networks
-    const followsOtherNetwork = Array.from(sections.values()).some(section =>
-      pathContainsSegment(section.points, start, end)
-    );
-    
-    const segmentLength = Math.hypot(end.x - start.x, end.y - start.y);
-    
-    if (followsExisting) {
-      score += segmentLength * 0.01; // Almost free to reuse existing path
-    } else if (followsOtherNetwork) {
-      score += segmentLength * 0.1; // Very low cost for following other network
-    } else {
-      score += segmentLength; // Full cost for new path
-    }
+/****************************************************
+ *                1) HELPERS GENERALES
+ ****************************************************/
+
+/**
+ * Verifica si dos segmentos se solapan
+ */
+const segmentsOverlap = (p1, p2, p3, p4) => {
+  // Si los segmentos son verticales
+  if (p1.x === p2.x && p3.x === p4.x && p1.x === p3.x) {
+    const [minY1, maxY1] = [Math.min(p1.y, p2.y), Math.max(p1.y, p2.y)];
+    const [minY2, maxY2] = [Math.min(p3.y, p4.y), Math.max(p3.y, p4.y)];
+    return !(maxY1 < minY2 || maxY2 < minY1);
   }
   
-  return score;
-};
-
-// Helper function to check if a path contains a segment
-const pathContainsSegment = (path, start, end) => {
-  for (let i = 0; i < path.length - 1; i++) {
-    const pathStart = path[i];
-    const pathEnd = path[i + 1];
-    
-    if ((pathStart.x === start.x && pathStart.y === start.y &&
-         pathEnd.x === end.x && pathEnd.y === end.y) ||
-        (pathStart.x === end.x && pathStart.y === end.y &&
-         pathEnd.x === start.x && pathEnd.y === start.y)) {
-      return true;
-    }
+  // Si los segmentos son horizontales
+  if (p1.y === p2.y && p3.y === p4.y && p1.y === p3.y) {
+    const [minX1, maxX1] = [Math.min(p1.x, p2.x), Math.max(p1.x, p2.x)];
+    const [minX2, maxX2] = [Math.min(p3.x, p4.x), Math.max(p3.x, p4.x)];
+    return !(maxX1 < minX2 || maxX2 < minX1);
   }
-  return false;
+  
+  return false; // No se solapan si no son paralelos o están en diferentes líneas
 };
 
-// Helper function to get a standardized key for a section
-const getSectionKey = (points, networkType) => {
-  // Ensure the points are sorted consistently to avoid duplicate keys
-  const sortedPoints = [...points].sort((a, b) => 
+/****************************************************
+ *            2) IMPLEMENTACIÓN GRILLA DE HANAN
+ ****************************************************/
+
+/**
+ * Genera la grilla de Hanan a partir de las coordenadas de las máquinas.
+ * La grilla de Hanan se forma con todas las intersecciones de las líneas
+ * horizontales y verticales que pasan por los puntos dados.
+ */
+export const calculateHananGrid = (points) => {
+  if (!points || points.length === 0) return { xCoords: [], yCoords: [] };
+
+  try {
+    // Obtener coordenadas x e y únicas
+    const xCoords = [...new Set(points.map(p => p.pos.x))].sort((a, b) => a - b);
+    const yCoords = [...new Set(points.map(p => p.pos.y))].sort((a, b) => a - b);
+
+    return { xCoords, yCoords };
+  } catch (error) {
+    console.error('Error en calculateHananGrid:', error);
+    return { xCoords: [], yCoords: [] };
+  }
+};
+
+/****************************************************
+ *      3) PROCESAMIENTO DE PAREDES Y PERFORACIONES
+ ****************************************************/
+
+/**
+ * Preprocesa la grilla bloqueada y devuelve una función
+ * que permite consultar si una celda está bloqueada.
+ */
+export const preprocessBlockedGrid = (walls, perforations, gridSize) => {
+  // Crear array 2D para representar la grilla
+  const blockedGrid = Array(gridSize.height).fill().map(() => 
+    Array(gridSize.width).fill(false)
+  );
+
+  // Marcar paredes como bloqueadas
+  walls.forEach(wall => {
+    if (wall.x >= 0 && wall.x < gridSize.width && 
+        wall.y >= 0 && wall.y < gridSize.height) {
+      blockedGrid[wall.y][wall.x] = true;
+    }
+  });
+
+  // Marcar perforaciones como pasables
+  perforations.forEach(perf => {
+    if (perf.x >= 0 && perf.x < gridSize.width && 
+        perf.y >= 0 && perf.y < gridSize.height) {
+      blockedGrid[perf.y][perf.x] = false;
+    }
+  });
+
+  // Devolver función que verifica si una celda está bloqueada
+  return (x, y) => {
+    if (x < 0 || x >= gridSize.width || y < 0 || y >= gridSize.height) return true;
+    return blockedGrid[y][x];
+  };
+};
+
+/****************************************************
+ *            4) IMPLEMENTACIÓN DE ESTRELLAS
+ ****************************************************/
+
+// Distancia Manhattan entre dos puntos
+const manhattanDistance = (p1, p2) => {
+  return Math.abs(p2.x - p1.x) + Math.abs(p2.y - p1.y);
+};
+
+// Comprueba si dos puntos son casi iguales
+const pointsEqual = (p1, p2, eps = 0.1) => {
+  return Math.abs(p1.x - p2.x) < eps && Math.abs(p1.y - p2.y) < eps;
+};
+
+// Verifica si un punto está dentro de un rectángulo
+const isPointInRectangle = (point, rect) => {
+  return point.x > rect.x1 && point.x < rect.x2 && 
+         point.y > rect.y1 && point.y < rect.y2;
+};
+
+// Verifica si un rectángulo está vacío (sin terminales dentro)
+const isRectangleEmpty = (rect, terminals) => {
+  return !terminals.some(t => isPointInRectangle(t, rect));
+};
+
+// Para identificar secciones (sin tipo de red)
+const getBaseSectionKey = (points) => {
+  const sorted = [...points].sort((a, b) =>
     a.x === b.x ? a.y - b.y : a.x - b.x
   );
-  // Create a base key from the points
-  const baseKey = `${sortedPoints[0].x},${sortedPoints[0].y}-${sortedPoints[1].x},${sortedPoints[1].y}`;
-  // Always prefix with network type to ensure separate sections for each network
+  return `${sorted[0].x},${sorted[0].y}-${sorted[1].x},${sorted[1].y}`;
+};
+
+// Para identificar secciones con tipo de red
+const getSectionKey = (points, networkType) => {
+  const baseKey = getBaseSectionKey(points);
   return networkType ? `${networkType}-${baseKey}` : baseKey;
 };
 
-// Helper function to get base section key without network type
-const getBaseSectionKey = (points) => {
-  const sortedPoints = [...points].sort((a, b) => 
-    a.x === b.x ? a.y - b.y : a.x - b.x
-  );
-  return `${sortedPoints[0].x},${sortedPoints[0].y}-${sortedPoints[1].x},${sortedPoints[1].y}`;
-};
+/****************************************************
+ *            2) IMPLEMENTACIÓN DE ESTRELLAS
+ ****************************************************/
 
-// Helper function to merge sections
-const mergeSections = (existingSection, newCable) => {
-  // Only merge if they belong to the same network
-  if (existingSection.function !== newCable.type) {
+/**
+ * Representa una estrella en el árbol de Steiner
+ * Una estrella conecta 3 terminales mediante un punto central
+ */
+class Star {
+  constructor(center, terminals) {
+    this.center = center;        // Punto central Steiner
+    this.terminals = terminals;  // Array de 3 terminales
+    this.gain = 0;              // Ganancia de usar esta estrella
+    this.rectangle = this.computeRectangle();
+    this.bridges = new Set();    // Aristas que reemplaza
+  }
+
+  // Calcula el rectángulo que contiene la estrella
+  computeRectangle() {
+    const xs = this.terminals.map(t => t.x);
+    const ys = this.terminals.map(t => t.y);
+    return {
+      x1: Math.min(...xs),
+      y1: Math.min(...ys),
+      x2: Math.max(...xs),
+      y2: Math.max(...ys)
+    };
+  }
+
+  // Calcula la ganancia de usar esta estrella vs MST
+  calculateGain(currentMST) {
+    // Encontrar aristas del MST que serían reemplazadas
+    this.bridges = this.findBridges(currentMST);
+    const bridgeLength = Array.from(this.bridges)
+      .reduce((sum, edge) => sum + manhattanDistance(edge.start, edge.end), 0);
+    
+    // Calcular longitud usando el punto Steiner
+    const steinerLength = this.terminals.reduce((sum, terminal) => 
+      sum + manhattanDistance(this.center, terminal), 0);
+    
+    this.gain = bridgeLength - steinerLength;
+    return this.gain;
+  }
+
+  // Encuentra las aristas del MST que esta estrella reemplazaría
+  findBridges(mst) {
+    const bridges = new Set();
+    const terminalPairs = [
+      [this.terminals[0], this.terminals[1]],
+      [this.terminals[1], this.terminals[2]],
+      [this.terminals[0], this.terminals[2]]
+    ];
+
+    for (const [t1, t2] of terminalPairs) {
+      const path = findPathInMST(t1, t2, mst);
+      if (path) {
+        const maxEdge = findMaxEdgeInPath(path);
+        if (maxEdge) bridges.add(maxEdge);
+      }
+    }
+
+    return bridges;
+  }
+}
+
+/**
+ * Encuentra un camino entre dos terminales en el MST
+ */
+const findPathInMST = (start, end, mst) => {
+  if (!start || !end) return null;
+
+  const edges = new Map();
+  mst.forEach(edge => {
+    const key1 = pointToString(edge.start);
+    const key2 = pointToString(edge.end);
+    
+    if (!edges.has(key1)) edges.set(key1, new Set());
+    if (!edges.has(key2)) edges.set(key2, new Set());
+    
+    edges.get(key1).add(key2);
+    edges.get(key2).add(key1);
+  });
+
+  const visited = new Set();
+  const path = [];
+  
+  const dfs = (current, target) => {
+    const currentKey = pointToString(current);
+    if (currentKey === pointToString(target)) return true;
+    
+    visited.add(currentKey);
+    const neighbors = edges.get(currentKey) || new Set();
+    
+    for (const neighborKey of neighbors) {
+      if (!visited.has(neighborKey)) {
+        path.push({
+          start: current,
+          end: stringToPoint(neighborKey)
+        });
+        
+        if (dfs(stringToPoint(neighborKey), target)) return true;
+        path.pop();
+      }
+    }
+    
     return false;
-  }
-
-  // Add the new cable label or name to the set of cables in this section
-  existingSection.cables.add(newCable.cableLabel || newCable.name);
-
-  // Add detailed information about the new cable to the section
-  existingSection.details.set(newCable.cableLabel || newCable.name, newCable);
-
-  return true;
-};
-
-
-// Preprocess blocked grid
-const preprocessBlockedGrid = (walls, perforations, gridSize) => {
-  const grid = Array.from({ length: gridSize }, () => Array(gridSize).fill(false));
-
-  // Mark walls as blocked
-  walls.forEach(({ x, y }) => {
-    grid[x][y] = true;
-  });
-
-  // Mark perforations as unblocked
-  perforations.forEach(({ x, y }) => {
-    grid[x][y] = false;
-  });
-
-  return grid;
-};
-
-// Helper function to get path cache key
-const getPathCacheKey = (start, end) => {
-  // Sort points to ensure consistent key regardless of direction
-  const points = [
-    { x: start.x, y: start.y },
-    { x: end.x, y: end.y }
-  ].sort((a, b) => a.x === b.x ? a.y - b.y : a.x - b.x);
-  
-  return `${points[0].x},${points[0].y}-${points[1].x},${points[1].y}`;
-};
-
-// Path cache to store precomputed paths
-const pathCache = new Map();
-
-// Helper function to determine direction
-const getDirection = (from, to) => {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  // Enforce exact horizontal or vertical direction only
-  if (Math.abs(dx) > 0.1) return dx > 0 ? 'right' : 'left';
-  if (Math.abs(dy) > 0.1) return dy > 0 ? 'down' : 'up';
-  return from.direction || 'right';
-};
-
-// Helper to find potential merge points along existing paths
-const findPotentialMergePoints = (start, end, existingPaths, sections) => {
-  const mergePoints = [];
-  const targetVector = {
-    x: end.x - start.x,
-    y: end.y - start.y
   };
 
-  // Check all existing paths for potential merge segments
-  const checkPath = (path) => {
-    for (let i = 0; i < path.length - 1; i++) {
-      const pathStart = path[i];
-      const pathEnd = path[i + 1];
-      
-      // Only consider orthogonal segments
-      if (!isOrthogonalSegment(pathStart, pathEnd)) continue;
-
-      // Calculate distance from our start point to this segment
-      const distanceFromStart = pointToLineDistance(start, pathStart, pathEnd);
-      const distanceFromEnd = pointToLineDistance(end, pathStart, pathEnd);
-      
-      // If either point is close to this segment, consider it for merging
-      if (distanceFromStart < 5 || distanceFromEnd < 5) {
-        const nearestStartPoint = nearestPointOnLine(start, pathStart, pathEnd);
-        const nearestEndPoint = nearestPointOnLine(end, pathStart, pathEnd);
-        
-        mergePoints.push({
-          pathSegment: { start: pathStart, end: pathEnd },
-          nearestStartPoint,
-          nearestEndPoint,
-          distanceFromStart,
-          distanceFromEnd,
-          isHorizontal: Math.abs(pathStart.y - pathEnd.y) < 0.1
-        });
-      }
-    }
-  };
-
-  // Check existing paths first
-  existingPaths.forEach(path => checkPath(path));
-  
-  // Then check sections
-  sections.forEach(section => checkPath(section.points));
-
-  return mergePoints;
-};
-
-// Find path that maximizes reuse of existing paths
-const findPath = (start, end, isBlockedGrid, GRID_SIZE, existingPaths = new Map(), sections = new Map()) => {
-  // Calculate Manhattan distance between two points
-  const manhattanDistance = (p1, p2) => 
-    Math.abs(p2.x - p1.x) + Math.abs(p2.y - p1.y);
-
-  // First collect all existing path segments
-  const existingSegments = [];
-  
-  // Add segments from sections with their cable count
-  sections.forEach(section => {
-    for (let i = 0; i < section.points.length - 1; i++) {
-      existingSegments.push({
-        start: section.points[i],
-        end: section.points[i + 1],
-        cableCount: section.cables.size,
-        points: section.points,
-        type: 'section'
-      });
-    }
-  });
-
-  // Sort segments by cable count (descending)
-  existingSegments.sort((a, b) => b.cableCount - a.cableCount);
-
-  let bestPath = null;
-  let bestScore = Infinity;
-
-  // Try direct path as baseline
-  const directPath = findOrthogonalPath(start, end, isBlockedGrid, GRID_SIZE);
-  if (directPath) {
-    bestPath = directPath;
-    bestScore = calculateNewTraySections(directPath, existingPaths, sections);
-  }
-
-  // Find potential branch points on existing paths
-  const branchCandidates = [];
-  
-  // Helper to check if a point is between start and end (with some margin)
-  const isPointBetween = (point, start, end, margin = 1.2) => {
-    const directDist = manhattanDistance(start, end);
-    const throughPoint = manhattanDistance(start, point) + manhattanDistance(point, end);
-    return throughPoint <= directDist * margin;
-  };
-
-  // For each existing segment, find potential branch points
-  for (const segment of existingSegments) {
-    // Skip non-orthogonal segments
-    if (!isOrthogonalSegment(segment.start, segment.end)) continue;
-
-    const isVertical = Math.abs(segment.start.x - segment.end.x) < 0.1;
-    
-    if (isVertical) {
-      const x = segment.start.x;
-      const minY = Math.min(segment.start.y, segment.end.y);
-      const maxY = Math.max(segment.start.y, segment.end.y);
-      
-      // Check if this vertical segment is potentially useful
-      const startProj = { x, y: Math.max(minY, Math.min(maxY, start.y)) };
-      const endProj = { x, y: Math.max(minY, Math.min(maxY, end.y)) };
-      
-      if (isPointBetween(startProj, start, end)) {
-        branchCandidates.push({
-          point: startProj,
-          segment,
-          distanceFromStart: manhattanDistance(start, startProj),
-          type: 'start'
-        });
-      }
-      
-      if (isPointBetween(endProj, start, end)) {
-        branchCandidates.push({
-          point: endProj,
-          segment,
-          distanceFromEnd: manhattanDistance(end, endProj),
-          type: 'end'
-        });
-      }
-    } else {
-      const y = segment.start.y;
-      const minX = Math.min(segment.start.x, segment.end.x);
-      const maxX = Math.max(segment.start.x, segment.end.x);
-      
-      // Check if this horizontal segment is potentially useful
-      const startProj = { x: Math.max(minX, Math.min(maxX, start.x)), y };
-      const endProj = { x: Math.max(minX, Math.min(maxX, end.x)), y };
-      
-      if (isPointBetween(startProj, start, end)) {
-        branchCandidates.push({
-          point: startProj,
-          segment,
-          distanceFromStart: manhattanDistance(start, startProj),
-          type: 'start'
-        });
-      }
-      
-      if (isPointBetween(endProj, start, end)) {
-        branchCandidates.push({
-          point: endProj,
-          segment,
-          distanceFromEnd: manhattanDistance(end, endProj),
-          type: 'end'
-        });
-      }
-    }
-  }
-
-  // Sort branch candidates by their potential value
-  branchCandidates.sort((a, b) => {
-    const scoreA = (a.distanceFromStart || a.distanceFromEnd) / (a.segment.cableCount + 1);
-    const scoreB = (b.distanceFromStart || b.distanceFromEnd) / (b.segment.cableCount + 1);
-    return scoreA - scoreB;
-  });
-
-  // Try each promising branch candidate
-  for (const candidate of branchCandidates) {
-    let path;
-    
-    if (candidate.type === 'start') {
-      // Try path: start -> branch -> end
-      const pathToBranch = findOrthogonalPath(start, candidate.point, isBlockedGrid, GRID_SIZE);
-      if (!pathToBranch) continue;
-
-      const pathFromBranch = findOrthogonalPath(candidate.point, end, isBlockedGrid, GRID_SIZE);
-      if (!pathFromBranch) continue;
-
-      path = [...pathToBranch.slice(0, -1), ...pathFromBranch];
-    } else {
-      // Try path: start -> branch -> end
-      const pathToBranch = findOrthogonalPath(start, candidate.point, isBlockedGrid, GRID_SIZE);
-      if (!pathToBranch) continue;
-
-      const pathFromBranch = findOrthogonalPath(candidate.point, end, isBlockedGrid, GRID_SIZE);
-      if (!pathFromBranch) continue;
-
-      path = [...pathToBranch.slice(0, -1), ...pathFromBranch];
-    }
-
-    // Calculate score based on new tray needed and cable count
-    const score = calculateNewTraySections(path, existingPaths, sections) / 
-                 (candidate.segment.cableCount + 1);
-
-    if (score < bestScore) {
-      bestScore = score;
-      bestPath = path;
-    }
-  }
-
-  // If we found a good path, return it
-  if (bestPath) {
-    return bestPath;
-  }
-
-  // Otherwise, return the direct path
-  return directPath;
-};
-
-// Helper to calculate how much new tray would be needed
-const calculateNewTrayNeeded = (path, existingSegments) => {
-  let newTrayLength = 0;
-
-  for (let i = 0; i < path.length - 1; i++) {
-    const start = path[i];
-    const end = path[i + 1];
-    let segmentExists = false;
-
-    // Check if this segment exists in any existing path
-    for (const segment of existingSegments) {
-      if (segmentOverlaps(start, end, segment.start, segment.end)) {
-        segmentExists = true;
-        break;
-      }
-    }
-
-    if (!segmentExists) {
-      newTrayLength += Math.abs(end.x - start.x) + Math.abs(end.y - start.y);
-    }
-  }
-
-  return newTrayLength;
-};
-
-// Helper function to find nearest point on a line segment
-const nearestPointOnLine = (point, lineStart, lineEnd) => {
-  const A = point.x - lineStart.x;
-  const B = point.y - lineStart.y;
-  const C = lineEnd.x - lineStart.x;
-  const D = lineEnd.y - lineStart.y;
-
-  const dot = A * C + B * D;
-  const lenSq = C * C + D * D;
-  let param = -1;
-
-  if (lenSq !== 0) {
-    param = dot / lenSq;
-  }
-
-  let x, y;
-  if (param < 0) {
-    x = lineStart.x;
-    y = lineStart.y;
-  } else if (param > 1) {
-    x = lineEnd.x;
-    y = lineEnd.y;
-  } else {
-    x = lineStart.x + param * C;
-    y = lineStart.y + param * D;
-  }
-
-  return { x, y };
-};
-
-// Helper to strictly check if a segment is orthogonal
-const isOrthogonalSegment = (start, end) => {
-  const dx = Math.abs(end.x - start.x);
-  const dy = Math.abs(end.y - start.y);
-  return (dx < 0.1 && dy > 0.1) || (dx > 0.1 && dy < 0.1);
-};
-
-// Adjust calculateStepCost to heavily favor existing paths
-const calculateStepCost = (current, nextPos, existingPaths, sections) => {
-  if (!isOrthogonalSegment(current, nextPos)) {
-    return Infinity;
-  }
-
-  let cost = 1;
-
-  for (const path of existingPaths.values()) {
-    if (pathContainsSegment(path, current, nextPos)) {
-      return 0.01; // Almost free to reuse existing path
-    }
-  }
-  
-  for (const section of sections.values()) {
-    if (pathContainsSegment(section.points, current, nextPos)) {
-      return 0.1; // Very low cost for reusing other network path
-    }
-  }
-
-  let minDistance = Infinity;
-  let closestPath = null;
-
-  for (const path of existingPaths.values()) {
-    for (let i = 0; i < path.length - 1; i++) {
-      const pathStart = path[i];
-      const pathEnd = path[i + 1];
-      
-      if (!isOrthogonalSegment(pathStart, pathEnd)) continue;
-      
-      const distance = pointToLineDistance(nextPos, pathStart, pathEnd);
-      if (distance < minDistance) {
-        minDistance = distance;
-        closestPath = { start: pathStart, end: pathEnd };
-      }
-    }
-  }
-
-  if (closestPath) {
-    const isParallel = isOrthogonalSegment(current, nextPos) &&
-                      isOrthogonalSegment(closestPath.start, closestPath.end) &&
-                      ((Math.abs(nextPos.x - current.x) < 0.1 && Math.abs(closestPath.end.x - closestPath.start.x) < 0.1) ||
-                       (Math.abs(nextPos.y - current.y) < 0.1 && Math.abs(closestPath.end.y - closestPath.start.y) < 0.1));
-
-    const currentDist = pointToLineDistance(current, closestPath.start, closestPath.end);
-    const nextDist = pointToLineDistance(nextPos, closestPath.start, closestPath.end);
-    const isMovingTowardsPath = nextDist < currentDist;
-
-    if (minDistance < 3) {
-      if (isParallel) {
-        cost *= minDistance < 1 ? 0.2 : 8.0;
-      } else if (isMovingTowardsPath) {
-        cost *= 0.1;
-      } else {
-        cost *= 5.0;
-      }
-    } else {
-      cost *= (1 + Math.pow(minDistance / 3, 2));
-    }
-  }
-
-  const newDirection = getDirection(current, nextPos);
-  if (current.direction && newDirection !== current.direction) {
-    cost *= 2.5;
-  }
-  
-  return cost;
-};
-
-// Find minimal network with path caching
-const findMinimalNetwork = (machines, networkCables, walls, perforations, GRID_SIZE, sections = new Map()) => {
-  const isBlockedGrid = preprocessBlockedGrid(walls, perforations, GRID_SIZE);
-  
-  // Group cables by their endpoints (regardless of direction)
-  const endpointGroups = new Map();
-  networkCables.forEach(cable => {
-    const sourcePos = machines[cable.source];
-    const targetPos = machines[cable.target];
-    if (!sourcePos || !targetPos) return;
-    
-    const key = getPathCacheKey(sourcePos, targetPos);
-    if (!endpointGroups.has(key)) {
-      endpointGroups.set(key, []);
-    }
-    endpointGroups.get(key).push(cable);
-  });
-
-  const endpoints = new Set();
-  networkCables.forEach(cable => {
-    endpoints.add(cable.source);
-    endpoints.add(cable.target);
-  });
-
-  const points = Array.from(endpoints).map(name => ({
-    name,
-    pos: machines[name]
-  })).filter(p => p.pos);
-
-  if (points.length < 2) return new Map();
-
-  const connectedPoints = new Set([points[0].name]);
-  const paths = new Map();
-
-  while (connectedPoints.size < points.length) {
-    let bestPath = null;
-    let bestScore = Infinity;
-    let bestConnection = null;
-
-    for (const connected of connectedPoints) {
-      const connectedPos = machines[connected];
-      
-      for (const point of points) {
-        if (connectedPoints.has(point.name)) continue;
-
-        const cacheKey = getPathCacheKey(connectedPos, point.pos);
-        let path = pathCache.get(cacheKey);
-
-        if (!path) {
-          path = findPath(connectedPos, point.pos, isBlockedGrid, GRID_SIZE, paths, sections);
-          if (path) {
-            pathCache.set(cacheKey, path);
-            // Also cache the reverse path
-            const reversePath = [...path].reverse();
-            const reverseKey = getPathCacheKey(point.pos, connectedPos);
-            if (reverseKey !== cacheKey) {
-              pathCache.set(reverseKey, reversePath);
-            }
-          }
-        }
-
-        if (path) {
-          const score = calculateNewTraySections(path, paths, sections);
-          if (score < bestScore) {
-            bestScore = score;
-            bestPath = path;
-            bestConnection = {
-              from: connected,
-              to: point.name
-            };
-          }
-        }
-      }
-    }
-
-    if (bestPath && bestConnection) {
-      connectedPoints.add(bestConnection.to);
-      const pathKey = getPathCacheKey(
-        machines[bestConnection.from],
-        machines[bestConnection.to]
-      );
-      paths.set(pathKey, bestPath);
-    } else {
-      break;
-    }
-  }
-
-  return paths;
-};
-
-// Find direct orthogonal path between two points
-const findOrthogonalPath = (start, end, isBlockedGrid, GRID_SIZE) => {
-  const queue = new MinHeap((a, b) => (a.cost + a.heuristic) - (b.cost + b.heuristic));
-  const visited = new Map();
-  const dirs = [[0, 1], [1, 0], [0, -1], [-1, 0]];
-
-  queue.push({
-    pos: { x: start.x, y: start.y },
-    cost: 0,
-    heuristic: Math.abs(end.x - start.x) + Math.abs(end.y - start.y),
-    path: [],
-    direction: null
-  });
-
-  while (!queue.empty()) {
-    const current = queue.pop();
-    const key = `${Math.floor(current.pos.x)},${Math.floor(current.pos.y)}`;
-
-    if (visited.has(key) && visited.get(key) <= current.cost) continue;
-    visited.set(key, current.cost);
-
-    if (Math.abs(current.pos.x - end.x) < 0.1 && Math.abs(current.pos.y - end.y) < 0.1) {
-      return [...current.path, current.pos, end];
-    }
-
-    for (const [dx, dy] of dirs) {
-      const nextX = current.pos.x + dx;
-      const nextY = current.pos.y + dy;
-
-      if (nextX >= 0 && nextX < GRID_SIZE &&
-          nextY >= 0 && nextY < GRID_SIZE &&
-          !isBlockedGrid[Math.floor(nextX)][Math.floor(nextY)]) {
-        
-        const nextPos = { x: nextX, y: nextY };
-        
-        // Ensure movement is orthogonal
-        if (!isOrthogonalSegment(current.pos, nextPos)) continue;
-
-        // Calculate turn cost
-        const newDirection = getDirection(current.pos, nextPos);
-        const turnCost = current.direction && newDirection !== current.direction ? 2 : 0;
-
-        // Prefer paths that move towards the target
-        const progressCost = Math.abs(end.x - nextX) + Math.abs(end.y - nextY) <
-                           Math.abs(end.x - current.pos.x) + Math.abs(end.y - current.pos.y) ? 0 : 0.1;
-
-        queue.push({
-          pos: nextPos,
-          cost: current.cost + 1 + turnCost + progressCost,
-          heuristic: Math.abs(end.x - nextX) + Math.abs(end.y - nextY),
-          path: [...current.path, current.pos],
-          direction: newDirection
-        });
-      }
-    }
-  }
-
+  if (dfs(start, end)) return path;
   return null;
 };
 
-// Helper function to calculate point to line distance
-const pointToLineDistance = (point, lineStart, lineEnd) => {
-  const A = point.x - lineStart.x;
-  const B = point.y - lineStart.y;
-  const C = lineEnd.x - lineStart.x;
-  const D = lineEnd.y - lineStart.y;
-
-  const dot = A * C + B * D;
-  const lenSq = C * C + D * D;
-  let param = -1;
-
-  if (lenSq !== 0) {
-    param = dot / lenSq;
-  }
-
-  let xx, yy;
-  if (param < 0) {
-    xx = lineStart.x;
-    yy = lineStart.y;
-  } else if (param > 1) {
-    xx = lineEnd.x;
-    yy = lineEnd.y;
-  } else {
-    xx = lineStart.x + param * C;
-    yy = lineStart.y + param * D;
-  }
-
-  const dx = point.x - xx;
-  const dy = point.y - yy;
-
-  return Math.sqrt(dx * dx + dy * dy);
+/**
+ * Encuentra la arista más larga en un camino
+ */
+const findMaxEdgeInPath = (path) => {
+  if (!path || path.length === 0) return null;
+  
+  return path.reduce((maxEdge, edge) => {
+    const dist = manhattanDistance(edge.start, edge.end);
+    const maxDist = maxEdge ? manhattanDistance(maxEdge.start, maxEdge.end) : -1;
+    return dist > maxDist ? edge : maxEdge;
+  }, null);
 };
 
-// Helper to get path along a segment
-const getPathAlongSegment = (start, end, segment) => {
-  const path = [];
-  
-  // If segment is horizontal
-  if (Math.abs(segment.start.y - segment.end.y) < 0.1) {
-    const y = segment.start.y;
-    const minX = Math.min(segment.start.x, segment.end.x);
-    const maxX = Math.max(segment.start.x, segment.end.x);
-    
-    // Get start and end x-coordinates within segment bounds
-    const startX = Math.max(minX, Math.min(maxX, start.x));
-    const endX = Math.max(minX, Math.min(maxX, end.x));
-    
-    // Generate path points
-    const step = Math.sign(endX - startX);
-    for (let x = startX; Math.abs(x - endX) > 0.1; x += step) {
-      path.push({ x, y });
-    }
-    path.push({ x: endX, y });
-  }
-  // If segment is vertical
-  else if (Math.abs(segment.start.x - segment.end.x) < 0.1) {
-    const x = segment.start.x;
-    const minY = Math.min(segment.start.y, segment.end.y);
-    const maxY = Math.max(segment.start.y, segment.end.y);
-    
-    // Get start and end y-coordinates within segment bounds
-    const startY = Math.max(minY, Math.min(maxY, start.y));
-    const endY = Math.max(minY, Math.min(maxY, end.y));
-    
-    // Generate path points
-    const step = Math.sign(endY - startY);
-    for (let y = startY; Math.abs(y - endY) > 0.1; y += step) {
-      path.push({ x, y });
-    }
-    path.push({ x, y: endY });
-  }
-  
-  return path;
+/**
+ * Convierte un string de coordenadas a punto
+ */
+const stringToPoint = (str) => {
+  const [x, y] = str.split(',').map(Number);
+  return { x, y };
 };
 
-// Modified section creation function
-const createSectionsFromSegment = (start, end, cables, networkType, sections, firstCable, machines) => {
-  // First, check if this path intersects with any existing paths
-  const intersections = [];
-  
-  for (const [key, section] of sections.entries()) {
-    // Only consider sections from same network
-    if (!key.startsWith(networkType + '-')) continue;
+/****************************************************
+ *         3) ROUTER OPTIMIZADO DE STEINER
+ ****************************************************/
 
-    for (let i = 0; i < section.points.length - 1; i++) {
-      const secStart = section.points[i];
-      const secEnd = section.points[i + 1];
+/**
+ * Implementa el algoritmo optimizado del paper
+ * para encontrar el árbol de Steiner rectilíneo
+ */
+class OptimizedSteinerRouter {
+  constructor(terminals, blockedGrid, gridSize) {
+    this.terminals = terminals;
+    this.blockedGrid = blockedGrid;
+    this.gridSize = gridSize;
+    this.properStars = [];
+    this.mst = null;
+  }
+
+  // Encuentra todas las estrellas propias (complejidad O(n))
+  findProperStars() {
+    // Ordenar terminales por coordenada x
+    const sortedTerminals = [...this.terminals].sort((a, b) => a.x - b.x);
+
+    // Para cada terminal, mirar los dos siguientes más cercanos
+    for (let i = 0; i < sortedTerminals.length - 2; i++) {
+      const t1 = sortedTerminals[i];
       
-      // Check for T-junction intersections
-      if (isOrthogonalSegment(start, end) && isOrthogonalSegment(secStart, secEnd)) {
-        const isVertical = Math.abs(start.x - end.x) < 0.1;
-        const isSecVertical = Math.abs(secStart.x - secEnd.x) < 0.1;
+      for (let j = i + 1; j < i + 3 && j < sortedTerminals.length; j++) {
+        const t2 = sortedTerminals[j];
         
-        if (isVertical !== isSecVertical) { // Perpendicular segments
-          const vertSeg = isVertical ? {start, end} : {start: secStart, end: secEnd};
-          const horizSeg = isVertical ? {start: secStart, end: secEnd} : {start, end};
+        for (let k = j + 1; k < j + 3 && k < sortedTerminals.length; k++) {
+          const t3 = sortedTerminals[k];
           
-          // Check if they intersect
-          const vertX = vertSeg.start.x;
-          const horizY = horizSeg.start.y;
-          
-          const minX = Math.min(horizSeg.start.x, horizSeg.end.x);
-          const maxX = Math.max(horizSeg.start.x, horizSeg.end.x);
-          const minY = Math.min(vertSeg.start.y, vertSeg.end.y);
-          const maxY = Math.max(vertSeg.start.y, vertSeg.end.y);
-          
-          if (vertX >= minX && vertX <= maxX && horizY >= minY && horizY <= maxY) {
-            intersections.push({
-              point: { x: vertX, y: horizY },
-              section,
-              segmentIndex: i
-            });
+          // Verificar si forman una estrella propia
+          const star = this.createStarIfProper(t1, t2, t3);
+          if (star) {
+            this.properStars.push(star);
           }
         }
       }
     }
   }
 
-  // Sort intersections by position along the path
-  intersections.sort((a, b) => {
-    const isVertical = Math.abs(start.x - end.x) < 0.1;
-    if (isVertical) {
-      return a.point.y - b.point.y;
-    }
-    return a.point.x - b.point.x;
-  });
-
-  // Process path segments between intersections
-  let currentPoint = start;
-  const allPoints = [start, ...intersections.map(i => i.point), end];
-
-  for (let i = 0; i < allPoints.length - 1; i++) {
-    const segStart = allPoints[i];
-    const segEnd = allPoints[i + 1];
+  // Crea una estrella si los tres puntos forman una configuración válida
+  createStarIfProper(t1, t2, t3) {
+    // Ordenar puntos para formar potencial estrella
+    const [left, middle, right] = [t1, t2, t3].sort((a, b) => a.x - b.x);
     
-    // Create section for this segment
-    const sectionKey = getSectionKey([segStart, segEnd], networkType);
-    if (!sections.has(sectionKey)) {
-      sections.set(sectionKey, {
-        points: [segStart, segEnd],
-        cables: new Set(cables.map(c => c.cableLabel || c.name)),
-        function: networkType,
-        color: firstCable.color,
-        type: 'trunk',
-        details: new Map(cables.map(c => [c.cableLabel || c.name, c]))
-      });
-    } else {
-      // Add cables to existing section
-      const section = sections.get(sectionKey);
-      cables.forEach(cable => {
-        section.cables.add(cable.cableLabel || cable.name);
-        section.details.set(cable.cableLabel || cable.name, cable);
-      });
+    // Verificar si forma una configuración válida de estrella
+    if (middle.y < Math.min(left.y, right.y) || 
+        middle.y > Math.max(left.y, right.y)) {
+      return null;
     }
 
-    // If this is an intersection point, also update the intersecting section
-    if (intersections[i]) {
-      const intersection = intersections[i];
-      const intersectingSection = intersection.section;
-      
-      // Split the intersecting section at the intersection point
-      const points = intersectingSection.points;
-      const splitIndex = intersection.segmentIndex + 1;
-      
-      // Create new sections for the split parts
-      const part1Points = [...points.slice(0, splitIndex), intersection.point];
-      const part2Points = [intersection.point, ...points.slice(splitIndex)];
-      
-      // Create new sections with the split parts
-      const part1Key = getSectionKey(part1Points, networkType);
-      const part2Key = getSectionKey(part2Points, networkType);
-      
-      sections.set(part1Key, {
-        points: part1Points,
-        cables: new Set(intersectingSection.cables),
-        function: networkType,
-        color: intersectingSection.color,
-        type: 'trunk',
-        details: new Map(intersectingSection.details)
-      });
-      
-      sections.set(part2Key, {
-        points: part2Points,
-        cables: new Set(intersectingSection.cables),
-        function: networkType,
-        color: intersectingSection.color,
-        type: 'trunk',
-        details: new Map(intersectingSection.details)
-      });
-      
-      // Remove the original section
-      sections.delete(getSectionKey(points, networkType));
+    // Crear centro potencial
+    const center = {
+      x: middle.x,
+      y: left.y
+    };
+
+    // Crear estrella y verificar si su rectángulo está vacío
+    const star = new Star(center, [left, middle, right]);
+    if (!isRectangleEmpty(star.rectangle, 
+        this.terminals.filter(t => t !== t1 && t !== t2 && t !== t3))) {
+      return null;
     }
+
+    return star;
   }
-};
 
-// Helper function to find main path sections
-const findMainPathSections = (sections, networkType) => {
-  // Group sections by their base key (without network type)
-  const sectionGroups = new Map();
-  
-  for (const [key, section] of sections.entries()) {
-    if (!key.startsWith(networkType + '-')) continue;
+  // Algoritmo principal para encontrar el árbol de Steiner óptimo
+  findOptimalSteinerTree() {
+    // 1. Encontrar MST inicial
+    this.mst = this.findMinimumSpanningTree();
     
-    const baseKey = getBaseSectionKey(section.points);
-    if (!sectionGroups.has(baseKey)) {
-      sectionGroups.set(baseKey, []);
-    }
-    sectionGroups.get(baseKey).push({ key, section });
-  }
-  
-  // For each group, identify the main section (one with most cables)
-  const mainSections = new Map();
-  const sectionsToRemove = new Set();
-  
-  for (const [baseKey, groupSections] of sectionGroups.entries()) {
-    if (groupSections.length > 1) {
-      // Sort sections by number of cables (descending)
-      groupSections.sort((a, b) => b.section.cables.size - a.section.cables.size);
+    // 2. Encontrar todas las estrellas propias
+    this.findProperStars();
+    
+    // 3. Calcular ganancias
+    this.properStars.forEach(star => star.calculateGain(this.mst));
+    
+    // 4. Ordenar estrellas por ganancia
+    this.properStars.sort((a, b) => b.gain - a.gain);
+
+    // 5. Procesar estrellas en orden de ganancia decreciente
+    const finalTree = new Set(this.mst);
+    const processedStars = new Set();
+
+    for (const star of this.properStars) {
+      if (star.gain <= 0) continue;
       
-      // The first one is the main section
-      const mainSection = groupSections[0];
-      mainSections.set(baseKey, mainSection);
-      
-      // Merge all other sections into the main one and mark them for removal
-      for (let i = 1; i < groupSections.length; i++) {
-        const lesserSection = groupSections[i];
+      if (this.canAddStarToTree(star, finalTree)) {
+        // Remover aristas reemplazadas
+        star.bridges.forEach(bridge => finalTree.delete(bridge));
         
-        // Merge cables from lesser section into main section
-        lesserSection.section.cables.forEach(cableId => {
-          mainSection.section.cables.add(cableId);
-          if (lesserSection.section.details.has(cableId)) {
-            mainSection.section.details.set(
-              cableId,
-              lesserSection.section.details.get(cableId)
-            );
-          }
+        // Añadir nuevas aristas de la estrella
+        star.terminals.forEach(terminal => {
+          finalTree.add({
+            start: star.center,
+            end: terminal
+          });
         });
         
-        sectionsToRemove.add(lesserSection.key);
+        processedStars.add(star);
       }
-    } else if (groupSections.length === 1) {
-      // If only one section, it's automatically the main one
-      mainSections.set(baseKey, groupSections[0]);
     }
-  }
-  
-  return { mainSections, sectionsToRemove };
-};
 
-// Helper to track cable assignments in sections
-const CableSection = class {
+    return Array.from(finalTree);
+  }
+
+  // Encuentra el MST inicial usando Prim
+  findMinimumSpanningTree() {
+    const edges = new Set();
+    const visited = new Set([this.terminals[0]]);
+    
+    while (visited.size < this.terminals.length) {
+      let minEdge = null;
+      let minDist = Infinity;
+
+      // Encontrar la arista más corta que conecta a un nuevo terminal
+      for (const v of visited) {
+        for (const t of this.terminals) {
+          if (!visited.has(t)) {
+            const dist = manhattanDistance(v, t);
+            if (dist < minDist) {
+              minDist = dist;
+              minEdge = { start: v, end: t };
+            }
+          }
+        }
+      }
+
+      edges.add(minEdge);
+      visited.add(minEdge.end);
+    }
+
+    return edges;
+  }
+
+  // Verifica si una estrella puede ser añadida al árbol
+  canAddStarToTree(star, currentTree) {
+    // Verificar que todas las aristas a reemplazar existen
+    for (const bridge of star.bridges) {
+      if (!this.edgeExistsInTree(bridge, currentTree)) {
+        return false;
+      }
+    }
+
+    // Verificar que no crea ciclos
+    const testTree = new Set(currentTree);
+    star.bridges.forEach(bridge => testTree.delete(bridge));
+    star.terminals.forEach(terminal => {
+      testTree.add({
+        start: star.center,
+        end: terminal
+      });
+    });
+
+    return !this.hasCycle(testTree);
+  }
+
+  // Helpers para verificación de ciclos
+  edgeExistsInTree(edge, tree) {
+    return Array.from(tree).some(e => 
+      (pointsEqual(e.start, edge.start) && pointsEqual(e.end, edge.end)) ||
+      (pointsEqual(e.start, edge.end) && pointsEqual(e.end, edge.start))
+    );
+  }
+
+  hasCycle(edges) {
+    // Implementación simple de detección de ciclos
+    // usando conjunto disjunto (Union-Find)
+    const vertices = new Set();
+    edges.forEach(e => {
+      vertices.add(e.start);
+      vertices.add(e.end);
+    });
+
+    const parent = new Map();
+    vertices.forEach(v => parent.set(v, v));
+
+    const find = (v) => {
+      if (parent.get(v) !== v) {
+        parent.set(v, find(parent.get(v)));
+      }
+      return parent.get(v);
+    };
+
+    const union = (v1, v2) => {
+      const p1 = find(v1);
+      const p2 = find(v2);
+      if (p1 !== p2) {
+        parent.set(p2, p1);
+        return false; // No ciclo
+      }
+      return true; // Ciclo encontrado
+    };
+
+    for (const edge of edges) {
+      if (union(edge.start, edge.end)) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+/****************************************************
+ *         4) MANEJO DE SECCIONES Y MERGING
+ ****************************************************/
+
+class CableSection {
   constructor(points, networkType) {
     this.points = points;
     this.cables = new Set();
     this.function = networkType;
     this.details = new Map();
-    this.steinerPoint = null;
+    this.color = null;
+    this.type = 'trunk';
   }
 
-  // Add cable to section
   addCable(cable) {
-    this.cables.add(cable.cableLabel || cable.name);
-    this.details.set(cable.cableLabel || cable.name, cable);
-    // Set color and type from first cable if not already set
+    const cableId = cable.cableLabel || cable.name;
+    this.cables.add(cableId);
+    this.details.set(cableId, cable);
     if (!this.color) {
       this.color = cable.color;
-      this.type = 'trunk';
     }
   }
 
-  // Add method to check if section overlaps with another
+  // Verifica solapamiento con otra sección
   overlaps(other) {
     return this.points.some((p1, i) => {
       if (i === this.points.length - 1) return false;
@@ -895,746 +517,470 @@ const CableSection = class {
     });
   }
 
-  // Merge another section into this one
+  // Fusiona otra sección con esta
   merge(other) {
-    // Merge cables
-    other.cables.forEach(cable => this.cables.add(cable));
+    other.cables.forEach(c => this.cables.add(c));
     other.details.forEach((detail, key) => this.details.set(key, detail));
 
-    // Transfer color and type if not already set
     if (!this.color) {
       this.color = other.color;
       this.type = other.type;
     }
 
-    // Merge points ensuring connectivity
-    const mergedPoints = new Set();
-    const addPoint = p => mergedPoints.add(`${p.x},${p.y}`);
+    // Unir puntos manteniendo orden
+    const uniquePoints = new Set();
+    const addPoint = (p) => uniquePoints.add(`${p.x},${p.y}`);
     this.points.forEach(addPoint);
     other.points.forEach(addPoint);
 
-    this.points = Array.from(mergedPoints).map(str => {
-      const [x, y] = str.split(',').map(Number);
-      return {x, y};
-    });
+    this.points = Array.from(uniquePoints)
+      .map(str => {
+        const [x, y] = str.split(',').map(Number);
+        return { x, y };
+      });
 
-    // Sort points to maintain path continuity
     this.points = orderPointsForContinuity(this.points);
   }
-};
+}
 
-// Helper to check if two segments overlap
-const segmentsOverlap = (p1, p2, p3, p4) => {
-  // Check if segments are parallel and overlapping
-  if (Math.abs(p1.x - p2.x) < 0.1) { // Vertical segments
-    if (Math.abs(p3.x - p4.x) < 0.1 && Math.abs(p1.x - p3.x) < 0.1) {
-      const minY1 = Math.min(p1.y, p2.y);
-      const maxY1 = Math.max(p1.y, p2.y);
-      const minY2 = Math.min(p3.y, p4.y);
-      const maxY2 = Math.max(p3.y, p4.y);
-      return maxY1 >= minY2 && maxY2 >= minY1;
-    }
-  } else { // Horizontal segments
-    if (Math.abs(p3.y - p4.y) < 0.1 && Math.abs(p1.y - p3.y) < 0.1) {
-      const minX1 = Math.min(p1.x, p2.x);
-      const maxX1 = Math.max(p1.x, p2.x);
-      const minX2 = Math.min(p3.x, p4.x);
-      const maxX2 = Math.max(p3.x, p4.x);
-      return maxX1 >= minX2 && maxX2 >= minX1;
-    }
-  }
-  return false;
-};
+/****************************************************
+ *            5) UTILS Y CONEXIÓN FINAL
+ ****************************************************/
 
-// Helper to order points to maintain path continuity
+// Ordena puntos para continuidad en una ruta
 const orderPointsForContinuity = (points) => {
   if (points.length <= 2) return points;
 
   const result = [points[0]];
   const remaining = new Set(points.slice(1));
-  
+
   while (remaining.size > 0) {
     const last = result[result.length - 1];
     let nearest = null;
     let minDist = Infinity;
 
     for (const point of remaining) {
-      const dist = manhattanDistance(last, point);
-      if (dist < minDist) {
-        minDist = dist;
-        nearest = point;
+      // Only consider points that form rectilinear paths (same x or same y)
+      if (point.x === last.x || point.y === last.y) {
+        const dist = manhattanDistance(last, point);
+        if (dist < minDist) {
+          minDist = dist;
+          nearest = point;
+        }
       }
     }
 
-    if (!nearest) break;
-    result.push(nearest);
-    remaining.delete(nearest);
+    // If no rectilinear point found, create intermediate point
+    if (!nearest) {
+      const nextPoint = Array.from(remaining)[0];
+      // Create L-shaped path using intermediate point
+      const intermediate = {
+        x: last.x,
+        y: nextPoint.y
+      };
+      result.push(intermediate);
+      result.push(nextPoint);
+      remaining.delete(nextPoint);
+    } else {
+      result.push(nearest);
+      remaining.delete(nearest);
+    }
   }
 
   return result;
 };
 
-// Modify findRectilinearSteinerTree to better handle cable assignments through Steiner points
-const findRectilinearSteinerTree = (networkCables, machines, isBlockedGrid, GRID_SIZE, existingPaths = new Map(), allSections = new Map()) => {
-  const endpointGroups = new Map();
-  const sections = new Map();
+// Verifica si un cable podría usar un segmento de ruta
+const couldUsePath = (cable, start, end, machines) => {
+  const source = machines[cable.source];
+  const target = machines[cable.target];
   
-  // Group cables by their endpoints
-  networkCables.forEach(cable => {
-    const sourcePos = machines[cable.source];
-    const targetPos = machines[cable.target];
-    if (!sourcePos || !targetPos) return;
+  if (!source || !target) return false;
+
+  // Verificar si este segmento ayuda a llegar del origen al destino
+  const distWithSegment = 
+    manhattanDistance(source, start) + 
+    manhattanDistance(start, end) + 
+    manhattanDistance(end, target);
+  
+  const directDist = manhattanDistance(source, target);
+  
+  // Permitir cierta desviación del camino directo
+  return distWithSegment <= directDist * 1.5;
+};
+
+// Encuentra un camino a través de las secciones para un cable
+const findPathThroughSections = (cable, sections, machines) => {
+  const source = machines[cable.source];
+  const target = machines[cable.target];
+  
+  if (!source || !target) return null;
+
+  // Crear grafo de secciones conectadas
+  const graph = new Map();
+  sections.forEach((section, key) => {
+    if (!section.cables.has(cable.cableLabel || cable.name)) return;
     
-    const key = getPathCacheKey(sourcePos, targetPos);
-    if (!endpointGroups.has(key)) {
-      endpointGroups.set(key, []);
-    }
-    endpointGroups.get(key).push(cable);
+    const [start, end] = section.points;
+    if (!graph.has(pointToString(start))) graph.set(pointToString(start), new Set());
+    if (!graph.has(pointToString(end))) graph.set(pointToString(end), new Set());
+    
+    graph.get(pointToString(start)).add(pointToString(end));
+    graph.get(pointToString(end)).add(pointToString(start));
   });
 
-  // Get unique points
-  const points = Array.from(new Set(networkCables.flatMap(cable => 
-    [cable.source, cable.target]
-  ))).map(name => ({
-    name,
-    pos: machines[name]
-  })).filter(p => p.pos);
-
-  // First build the tree
-  const { paths, steinerPoints } = buildSteinerTree(points, isBlockedGrid, GRID_SIZE, existingPaths, allSections);
-  
-  // Create initial sections
-  for (const [pathKey, path] of paths.entries()) {
-    for (let i = 0; i < path.length - 1; i++) {
-      const start = path[i];
-      const end = path[i + 1];
-      const sectionKey = getSectionKey([start, end], networkCables[0].type);
-      
-      if (!sections.has(sectionKey)) {
-        const newSection = new CableSection([start, end], networkCables[0].type);
-        newSection.color = networkCables[0].color;
-        newSection.type = 'trunk';
-        sections.set(sectionKey, newSection);
-      }
+  // Usar A* para encontrar el camino más corto
+  const path = findShortestPath(
+    pointToString(source),
+    pointToString(target),
+    graph,
+    point => {
+      const [x, y] = point.split(',').map(Number);
+      return manhattanDistance({x, y}, target);
     }
-  }
+  );
 
-  // For each cable, find ALL possible paths through the tree
-  for (const cable of networkCables) {
-    const sourcePos = machines[cable.source];
-    const targetPos = machines[cable.target];
-    if (!sourcePos || !targetPos) continue;
+  if (!path) return null;
 
-    // Find all possible paths through the tree including Steiner points
-    const possiblePaths = findAllPossiblePaths(
-      sourcePos,
-      targetPos,
-      paths,
-      steinerPoints
-    );
-
-    // Use the shortest valid path
-    let bestPath = null;
-    let bestScore = Infinity;
-
-    for (const path of possiblePaths) {
-      const score = calculatePathScore(path, existingPaths, allSections, steinerPoints);
-      if (score < bestScore) {
-        bestScore = score;
-        bestPath = path;
-      }
-    }
-
-    // Assign cable to all sections along the best path
-    if (bestPath) {
-      for (let i = 0; i < bestPath.length - 1; i++) {
-        const start = bestPath[i];
-        const end = bestPath[i + 1];
-        const sectionKey = getSectionKey([start, end], cable.type);
-        
-        if (sections.has(sectionKey)) {
-          const section = sections.get(sectionKey);
-          section.addCable(cable);
-        }
-      }
-    }
-  }
-
-  // Filter out sections with no cables
-  const validSections = new Map();
-  for (const [key, section] of sections.entries()) {
-    if (section.cables.size > 0) {
-      validSections.set(key, section);
-    }
-  }
-
-  return { sections: validSections, paths };
-};
-
-// New helper to find all possible paths through the tree including Steiner points
-const findAllPossiblePaths = (start, end, paths, steinerPoints) => {
-  const allPaths = [];
-  const visited = new Set();
-  
-  const findPaths = (current, currentPath) => {
-    if (pointsEqual(current, end)) {
-      allPaths.push([...currentPath, end]);
-      return;
-    }
-
-    const key = `${current.x},${current.y}`;
-    if (visited.has(key)) return;
-    visited.add(key);
-
-    // Look for connected points through existing paths
-    for (const [_, path] of paths.entries()) {
-      for (let i = 0; i < path.length - 1; i++) {
-        const pathStart = path[i];
-        const pathEnd = path[i + 1];
-
-        if (pointsEqual(current, pathStart)) {
-          findPaths(pathEnd, [...currentPath, current]);
-        } else if (pointsEqual(current, pathEnd)) {
-          findPaths(pathStart, [...currentPath, current]);
-        }
-      }
-    }
-
-    visited.delete(key);
-  };
-
-  findPaths(start, []);
-  return allPaths;
-};
-
-// Helper to find sections that form a path between two points
-const findPathSections = (start, end, sections) => {
-  const pathSections = new Set();
-  let current = start;
-  
-  while (manhattanDistance(current, end) > 0.1) {
-    let nextPoint = null;
-    let nextSection = null;
-    
-    // Find section connected to current point that leads toward end
-    for (const [key, section] of sections.entries()) {
-      const [secStart, secEnd] = section.points;
-      
-      if (pointsEqual(secStart, current)) {
-        if (manhattanDistance(secEnd, end) < manhattanDistance(current, end)) {
-          nextPoint = secEnd;
-          nextSection = key;
-          break;
-        }
-      } else if (pointsEqual(secEnd, current)) {
-        if (manhattanDistance(secStart, end) < manhattanDistance(current, end)) {
-          nextPoint = secStart;
-          nextSection = key;
-          break;
-        }
-      }
-    }
-    
-    if (!nextSection) break; // No path found
-    
-    pathSections.add(nextSection);
-    current = nextPoint;
-  }
-  
-  return pathSections;
-};
-
-// Helper to compare points
-const pointsEqual = (p1, p2) => 
-  Math.abs(p1.x - p2.x) < 0.1 && Math.abs(p1.y - p2.y) < 0.1;
-
-// Helper to build Steiner tree from points
-const buildSteinerTree = (points, isBlockedGrid, GRID_SIZE, existingPaths, allSections) => {
-  if (points.length < 2) return { paths: new Map(), steinerPoints: new Set() };
-
-  // Sort points by proximity to existing paths
-  const sortedPoints = [...points].sort((a, b) => {
-    const aScore = getPointProximityScore(a.pos, existingPaths, allSections);
-    const bScore = getPointProximityScore(b.pos, existingPaths, allSections);
-    return aScore - bScore;
+  // Convertir strings de vuelta a puntos
+  return path.map(str => {
+    const [x, y] = str.split(',').map(Number);
+    return {x, y};
   });
-  
-  const connectedPoints = new Set([sortedPoints[0].name]);
-  const paths = new Map();
-  const steinerPoints = new Set();
+};
 
-  while (connectedPoints.size < points.length) {
-    let bestConnection = null;
-    let bestScore = Infinity;
+// Helper para convertir punto a string
+const pointToString = (point) => `${point.x},${point.y}`;
+
+// Implementación de A* para encontrar camino más corto
+const findShortestPath = (start, goal, graph, heuristic) => {
+  const frontier = new MinHeap((a, b) => a.priority - b.priority);
+  frontier.push({state: start, priority: 0});
+  
+  const cameFrom = new Map();
+  const costSoFar = new Map();
+  cameFrom.set(start, null);
+  costSoFar.set(start, 0);
+
+  while (!frontier.empty()) {
+    const current = frontier.pop().state;
     
-    for (const point of sortedPoints) {
-      if (connectedPoints.has(point.name)) continue;
-      
-      // First try finding Steiner points (prioritize four-way junctions)
-      const steinerCandidates = findAllPotentialSteinerPoints(point.pos, paths, allSections);
-      
-      for (const candidate of steinerCandidates) {
-        const path = findOrthogonalPathWithLimitedTurns(
-          point.pos,
-          candidate,
-          isBlockedGrid,
-          GRID_SIZE,
-          existingPaths
-        );
-        
-        if (path) {
-          // Pass steinerPoints to calculatePathScore
-          let score = calculatePathScore(path, existingPaths, allSections, steinerPoints);
-          if (candidate.type === 'projection') {
-            score *= 0.8; // 20% bonus for projected points
+    if (current === goal) {
+      const path = [];
+      let curr = goal;
+      while (curr) {
+        path.unshift(curr);
+        curr = cameFrom.get(curr);
+      }
+      return path;
+    }
+
+    for (const next of (graph.get(current) || [])) {
+      const [x1, y1] = current.split(',').map(Number);
+      const [x2, y2] = next.split(',').map(Number);
+      const newCost = costSoFar.get(current) + manhattanDistance({x: x1, y: y1}, {x: x2, y: y2});
+
+      if (!costSoFar.has(next) || newCost < costSoFar.get(next)) {
+        costSoFar.set(next, newCost);
+        const priority = newCost + heuristic(next);
+        frontier.push({state: next, priority});
+        cameFrom.set(next, current);
+      }
+    }
+  }
+
+  return null;
+};
+
+/****************************************************
+ *         6) FUNCIÓN PRINCIPAL optimizeNetworkPaths
+ ****************************************************/
+
+/**
+ * Función principal que optimiza las rutas de cables
+ * utilizando el algoritmo optimizado de Steiner
+ */
+export const optimizeNetworkPaths = (cables, machines, walls, perforations, gridSize, isBlockedGrid) => {
+  try {
+    if (!Array.isArray(cables) || cables.length === 0) {
+      return { sections: new Map(), cableRoutes: new Map() };
+    }
+
+    // Agrupar cables por tipo de red en lugar de función
+    const cablesByNetwork = new Map();
+    cables.forEach(cable => {
+      // Use cable.type (network type) instead of cable.cableFunction
+      if (!cablesByNetwork.has(cable.type)) {
+        cablesByNetwork.set(cable.type, []);
+      }
+      cablesByNetwork.get(cable.type).push(cable);
+    });
+
+    const allSections = new Map();
+    const cableRoutes = new Map();
+
+    // Procesar cada grupo de cables por red
+    for (const [networkType, networkCables] of cablesByNetwork) {
+      // Skip unknown network types
+      if (networkType === 'unknown') continue;
+
+      // Recolectar terminales (máquinas) para esta red
+      const terminals = new Set();
+      networkCables.forEach(cable => {
+        const source = machines[cable.source];
+        const target = machines[cable.target];
+        if (source && target) {
+          terminals.add(source);
+          terminals.add(target);
+        }
+      });
+
+      // Usar el router rectilíneo para encontrar las rutas óptimas
+      const router = new RectilinearRouter(Array.from(terminals), gridSize);
+      const paths = router.optimizeWithSteinerPoints();
+
+      // Crear secciones a partir de los paths
+      paths.forEach((path, index) => {
+        for (let i = 0; i < path.length - 1; i++) {
+          const sectionPoints = [path[i], path[i + 1]];
+          // Use networkType instead of cable function for section key
+          const sectionKey = getSectionKey(sectionPoints, networkType);
+          
+          if (!allSections.has(sectionKey)) {
+            allSections.set(sectionKey, new CableSection(sectionPoints, networkType));
           }
           
-          if (score < bestScore) {
-            bestScore = score;
-            bestConnection = { point, path, steinerPoint: candidate };
-          }
+          // Asignar cables a las secciones
+          networkCables.forEach(cable => {
+            const source = machines[cable.source];
+            const target = machines[cable.target];
+            if (source && target && couldUsePath(cable, path[i], path[i + 1], machines)) {
+              allSections.get(sectionKey).addCable(cable);
+            }
+          });
         }
-      }
-      
-      // Try direct connections
-      for (const connectedName of connectedPoints) {
-        const connected = sortedPoints.find(p => p.name === connectedName);
-        const path = findOrthogonalPathWithLimitedTurns(
-          point.pos,
-          connected.pos,
-          isBlockedGrid,
-          GRID_SIZE,
-          existingPaths
-        );
-        
+      });
+
+      // Asignar rutas a cada cable
+      networkCables.forEach(cable => {
+        const path = findPathThroughSections(cable, allSections, machines);
         if (path) {
-          // Pass steinerPoints to calculatePathScore
-          const score = calculatePathScore(path, existingPaths, allSections, steinerPoints);
-          if (score < bestScore) {
-            bestScore = score;
-            bestConnection = { point, path };
+          cableRoutes.set(cable.cableLabel || cable.name, path);
+        }
+      });
+    }
+
+    // Fusionar secciones solapadas
+    mergeSections(allSections);
+
+    return { sections: allSections, cableRoutes };
+  } catch (error) {
+    console.error('Error in optimizeNetworkPaths:', error);
+    return { sections: new Map(), cableRoutes: new Map() };
+  }
+};
+
+class RectilinearRouter {
+  constructor(terminals, gridSize) {
+    this.terminals = terminals;
+    this.gridSize = gridSize;
+    this.mst = null;
+  }
+
+  findRectilinearPath(start, end) {
+    const path = [
+      { x: start.x, y: start.y },
+      { x: start.x, y: end.y },
+      { x: end.x, y: end.y }
+    ];
+
+    if (start.x === end.x || start.y === end.y) {
+      return [path[0], path[2]];
+    }
+
+    return path;
+  }
+
+  findMinimumSpanningTree() {
+    const edges = new Set();
+    const visited = new Set([this.terminals[0]]);
+
+    while (visited.size < this.terminals.length) {
+      let minEdge = null;
+      let minPath = null;
+      let minDist = Infinity;
+
+      for (const v of visited) {
+        for (const t of this.terminals) {
+          if (!visited.has(t)) {
+            const path = this.findRectilinearPath(v, t);
+            const dist = manhattanDistance(v, t);
+            
+            if (dist < minDist) {
+              minDist = dist;
+              minEdge = { start: v, end: t };
+              minPath = path;
+            }
           }
         }
       }
-    }
-    
-    if (bestConnection) {
-      connectedPoints.add(bestConnection.point.name);
-      
-      if (bestConnection.steinerPoint) {
-        steinerPoints.add(bestConnection.steinerPoint);
-        paths.set(
-          getPathKey(bestConnection.point.pos, bestConnection.steinerPoint),
-          bestConnection.path
-        );
-      } else {
-        paths.set(
-          getPathKey(bestConnection.point.pos, bestConnection.path[bestConnection.path.length - 1]),
-          bestConnection.path
-        );
+
+      for (let i = 0; i < minPath.length - 1; i++) {
+        edges.add({
+          start: minPath[i],
+          end: minPath[i + 1],
+          isRectilinear: true
+        });
       }
-    } else {
-      break;
+
+      visited.add(minEdge.end);
     }
+
+    this.mst = edges;
+    return edges;
   }
 
-  return { paths, steinerPoints };
-};
-
-// New helper to find ALL potential Steiner points
-const findAllPotentialSteinerPoints = (point, existingPaths, allSections) => {
-  const candidates = new Set();
-  
-  // First check other network paths (give them priority)
-  for (const section of allSections.values()) {
-    for (const candidate of findPotentialSteinerPoints(point, section.points)) {
-      candidates.add(candidate);
+  optimizeWithSteinerPoints() {
+    if (!this.mst) {
+      this.findMinimumSpanningTree();
     }
-  }
-  
-  // Then check current network paths
-  for (const [_, path] of existingPaths.entries()) {
-    for (const candidate of findPotentialSteinerPoints(point, path)) {
-      candidates.add(candidate);
-    }
-  }
-  
-  return candidates;
-};
 
-// New helper to score point proximity to existing paths
-const getPointProximityScore = (point, existingPaths, allSections) => {
-  let minDistance = Infinity;
-  
-  // Check distances to existing paths
-  for (const path of existingPaths.values()) {
-    for (let i = 0; i < path.length - 1; i++) {
-      const distance = pointToLineDistance(point, path[i], path[i + 1]);
-      minDistance = Math.min(minDistance, distance);
-    }
-  }
-  
-  // Check distances to other network paths
-  for (const section of allSections.values()) {
-    for (let i = 0; i < section.points.length - 1; i++) {
-      const distance = pointToLineDistance(point, section.points[i], section.points[i + 1]);
-      minDistance = Math.min(minDistance, distance);
-    }
-  }
-  
-  return minDistance;
-};
+    const finalEdges = new Set(this.mst);
+    const processedPoints = new Set();
 
-// Modify calculatePathScore to receive steinerPoints parameter
-const calculatePathScore = (path, existingPaths, allSections, steinerPoints = new Set()) => {
-  let score = 0;
-  let lastDirection = null;
-
-  for (let i = 0; i < path.length - 1; i++) {
-    const start = path[i];
-    const end = path[i + 1];
-    const segmentLength = manhattanDistance(start, end);
-    
-    // Calculate direction and check for turns
-    const direction = getDirection(start, end);
-    if (lastDirection && direction !== lastDirection) {
-      // Check if turn is near a machine or Steiner point
-      const isNearEndpoint = isNearMachineOrSteiner(start, path[0], path[path.length - 1], steinerPoints);
+    for (const terminal of this.terminals) {
+      if (processedPoints.has(`${terminal.x},${terminal.y}`)) continue;
       
-      // Only penalize turns if they're not near endpoints
-      if (!isNearEndpoint) {
-        score += 10; // Heavy penalty for mid-path turns
+      const incidentEdges = Array.from(finalEdges).filter(edge =>
+        (edge.start.x === terminal.x && edge.start.y === terminal.y) ||
+        (edge.end.x === terminal.x && edge.end.y === terminal.y)
+      );
+
+      if (incidentEdges.length >= 3) {
+        this.optimizeCorner(terminal, incidentEdges, finalEdges);
       }
-    }
-    lastDirection = direction;
-    
-    // Check if this segment follows ANY existing path
-    let followsExistingPath = false;
-    
-    // Check existing paths and other networks
-    for (const existingPath of existingPaths.values()) {
-      if (pathContainsSegment(existingPath, start, end)) {
-        followsExistingPath = true;
-        break;
-      }
-    }
-    for (const section of allSections.values()) {
-      if (pathContainsSegment(section.points, start, end)) {
-        followsExistingPath = true;
-        break;
-      }
-    }
-    
-    // Extremely low cost for following existing path
-    score += followsExistingPath ? segmentLength * 0.01 : segmentLength;
-  }
-  
-  return score;
-};
 
-// New helper to check if a point is near a machine or Steiner point
-const isNearMachineOrSteiner = (point, startPoint, endPoint, steinerPoints, threshold = 2) => {
-  // Check distance to path endpoints (machines)
-  if (manhattanDistance(point, startPoint) <= threshold || 
-      manhattanDistance(point, endPoint) <= threshold) {
-    return true;
-  }
-  
-  // Check distance to Steiner points
-  for (const steinerPoint of steinerPoints) {
-    if (manhattanDistance(point, steinerPoint) <= threshold) {
-      return true;
+      processedPoints.add(`${terminal.x},${terminal.y}`);
     }
-  }
-  
-  return false;
-};
 
-// Modify findPotentialSteinerPoints to prefer four-way junctions
-const findPotentialSteinerPoints = (point, path) => {
-  const candidates = new Set();
-  
-  for (let i = 0; i < path.length - 1; i++) {
-    const start = path[i];
-    const end = path[i + 1];
-    
-    // Only consider orthogonal segments
-    if (!isOrthogonalSegment(start, end)) continue;
-    
-    // For vertical segments
-    if (Math.abs(start.x - end.x) < 0.1) {
-      const x = start.x;
-      const minY = Math.min(start.y, end.y);
-      const maxY = Math.max(start.y, end.y);
-      
-      // Project point onto segment
-      const projectedY = Math.max(minY, Math.min(maxY, point.y));
-      
-      // Add projected point with high priority (potential four-way junction)
-      candidates.add({
-        x,
-        y: projectedY,
-        priority: 2, // Higher priority for projected points
-        type: 'projection'
-      });
+    const segments = [];
+    for (const edge of finalEdges) {
+      segments.push([edge.start, edge.end]);
     }
-    // For horizontal segments
-    else if (Math.abs(start.y - end.y) < 0.1) {
-      const y = start.y;
-      const minX = Math.min(start.x, end.x);
-      const maxX = Math.max(start.x, end.x);
-      
-      // Project point onto segment
-      const projectedX = Math.max(minX, Math.min(maxX, point.x));
-      
-      // Add projected point with high priority
-      candidates.add({
-        x: projectedX,
-        y,
-        priority: 2,
-        type: 'projection'
+
+    return this.mergeSegments(segments);
+  }
+
+  optimizeCorner(point, edges, finalEdges) {
+    const connectedPoints = edges.map(edge => 
+      edge.start.x === point.x && edge.start.y === point.y ? edge.end : edge.start
+    );
+
+    const steinerPoint = {
+      x: Math.round(connectedPoints.reduce((sum, p) => sum + p.x, 0) / connectedPoints.length),
+      y: Math.round(connectedPoints.reduce((sum, p) => sum + p.y, 0) / connectedPoints.length)
+    };
+
+    const lengthWithout = edges.reduce((sum, edge) => 
+      sum + manhattanDistance(edge.start, edge.end), 0
+    );
+
+    const lengthWith = connectedPoints.reduce((sum, p) =>
+      sum + manhattanDistance(p, steinerPoint), 0
+    );
+
+    if (lengthWith < lengthWithout) {
+      edges.forEach(edge => finalEdges.delete(edge));
+
+      connectedPoints.forEach(p => {
+        const path = this.findRectilinearPath(p, steinerPoint);
+        for (let i = 0; i < path.length - 1; i++) {
+          finalEdges.add({
+            start: path[i],
+            end: path[i + 1],
+            isRectilinear: true
+          });
+        }
       });
     }
   }
-  
-  return candidates;
-};
 
-// Helper to get path key
-const getPathKey = (start, end) => {
-  // Sort points to ensure consistent key
-  const points = [start, end].sort((a, b) => 
-    a.x === b.x ? a.y - b.y : a.x - b.x
-  );
-  return `${points[0].x},${points[0].y}-${points[1].x},${points[1].y}`;
-};
+  mergeSegments(segments) {
+    const paths = [];
+    const used = new Set();
 
-// Helper for finding orthogonal paths with limited turns
-const findOrthogonalPathWithLimitedTurns = (start, end, isBlockedGrid, GRID_SIZE, existingPaths) => {
-  const queue = new MinHeap((a, b) => 
-    (a.cost + a.heuristic + a.turns * 4) - (b.cost + b.heuristic + b.turns * 4)
-  );
-  
-  const visited = new Map();
-  const maxTurns = 2; // Even more limited turns
-  
-  queue.push({
-    pos: { x: Math.round(start.x), y: Math.round(start.y) },
-    cost: 0,
-    heuristic: manhattanDistance(start, end),
-    path: [],
-    turns: 0,
-    direction: null
-  });
+    while (segments.length > used.size) {
+      let currentPath = [];
+      let current = null;
 
-  const dirs = [
-    { dx: 0, dy: 1, dir: 'down' },
-    { dx: 1, dy: 0, dir: 'right' },
-    { dx: 0, dy: -1, dir: 'up' },
-    { dx: -1, dy: 0, dir: 'left' }
-  ];
-
-  while (!queue.empty()) {
-    const current = queue.pop();
-    
-    if (pointsEqual(current.pos, end)) {
-      return [...current.path, current.pos, end];
-    }
-
-    const key = `${Math.round(current.pos.x)},${Math.round(current.pos.y)},${current.direction},${current.turns}`;
-    if (visited.has(key) && visited.get(key) <= current.cost) continue;
-    visited.set(key, current.cost);
-
-    for (const { dx, dy, dir } of dirs) {
-      // Only allow movement in one direction until hitting target coordinate
-      if (current.direction && dir !== current.direction) {
-        // If moving horizontally, only allow vertical turn if we're at target x
-        if ((current.direction === 'left' || current.direction === 'right') &&
-            Math.abs(current.pos.x - end.x) > 0.1) {
-          continue;
-        }
-        // If moving vertically, only allow horizontal turn if we're at target y
-        if ((current.direction === 'up' || current.direction === 'down') &&
-            Math.abs(current.pos.y - end.y) > 0.1) {
-          continue;
-        }
-      }
-
-      const nextX = current.pos.x + dx;
-      const nextY = current.pos.y + dy;
-
-      if (nextX < 0 || nextX >= GRID_SIZE || 
-          nextY < 0 || nextY >= GRID_SIZE ||
-          isBlockedGrid[Math.floor(nextX)][Math.floor(nextY)]) {
-        continue;
-      }
-
-      const nextPos = { x: nextX, y: nextY };
-      const turnCost = current.direction && dir !== current.direction ? 1 : 0;
-      const newTurns = current.turns + turnCost;
-      
-      if (newTurns > maxTurns) continue;
-
-      let moveCost = 1;
-      
-      // Much stronger preference for following existing paths
-      for (const path of existingPaths.values()) {
-        if (pathContainsSegment(path, current.pos, nextPos)) {
-          moveCost = 0.01; // Even stronger preference
+      for (let i = 0; i < segments.length; i++) {
+        if (!used.has(i)) {
+          currentPath = [...segments[i]];
+          current = currentPath[currentPath.length - 1];
+          used.add(i);
           break;
         }
       }
 
-      const nextCost = current.cost + moveCost;
-      const nextHeuristic = manhattanDistance(nextPos, end);
+      let foundConnection;
+      do {
+        foundConnection = false;
+        for (let i = 0; i < segments.length; i++) {
+          if (used.has(i)) continue;
 
-      queue.push({
-        pos: nextPos,
-        cost: nextCost,
-        heuristic: nextHeuristic,
-        path: [...current.path, current.pos],
-        turns: newTurns,
-        direction: dir
-      });
+          const [start, end] = segments[i];
+          if (start.x === current.x && start.y === current.y) {
+            currentPath.push(end);
+            current = end;
+            used.add(i);
+            foundConnection = true;
+            break;
+          }
+          if (end.x === current.x && end.y === current.y) {
+            currentPath.push(start);
+            current = start;
+            used.add(i);
+            foundConnection = true;
+            break;
+          }
+        }
+      } while (foundConnection);
+
+      paths.push(currentPath);
     }
+
+    return paths;
   }
+}
 
-  // If no path found, try simpler orthogonal path
-  return findDirectOrthogonalPath(start, end, isBlockedGrid, GRID_SIZE);
-};
+// Main routing function
+export function findRectilinearPaths(terminals, gridSize) {
+  const router = new RectilinearRouter(terminals, gridSize);
+  return router.optimizeWithSteinerPoints();
+}
 
-// Helper for finding direct orthogonal path (fallback)
-const findDirectOrthogonalPath = (start, end, isBlockedGrid, GRID_SIZE) => {
-  const path = [];
-  let current = { ...start };
-  path.push(current);
-
-  // First move horizontally
-  while (Math.abs(current.x - end.x) > 0.1) {
-    const nextX = current.x + Math.sign(end.x - current.x);
-    if (nextX < 0 || nextX >= GRID_SIZE || 
-        isBlockedGrid[Math.floor(nextX)][Math.floor(current.y)]) {
-      return null;
-    }
-    current = { x: nextX, y: current.y };
-    path.push(current);
-  }
-
-  // Then move vertically
-  while (Math.abs(current.y - end.y) > 0.1) {
-    const nextY = current.y + Math.sign(end.y - current.y);
-    if (nextY < 0 || nextY >= GRID_SIZE || 
-        isBlockedGrid[Math.floor(current.x)][Math.floor(nextY)]) {
-      return null;
-    }
-    current = { x: current.x, y: nextY };
-    path.push(current);
-  }
-
-  return path;
-};
-
-// Helper to reconstruct full path from sections
-const reconstructPath = (pathSections, sections) => {
-  if (pathSections.size === 0) return null;
-
-  const path = [];
-  const sectionArray = Array.from(pathSections);
-  
-  // Start with first point of first section
-  const firstSection = sections.get(sectionArray[0]);
-  path.push(firstSection.points[0]);
-  
-  // Build ordered path through sections
-  for (let i = 0; i < sectionArray.length; i++) {
-    const section = sections.get(sectionArray[i]);
-    const [start, end] = section.points;
+// Función auxiliar para fusionar secciones solapadas
+const mergeSections = (sections) => {
+  let merged = true;
+  while (merged) {
+    merged = false;
+    const sectionEntries = Array.from(sections.entries());
     
-    // If this is not the first section, check which point connects to previous
-    if (i > 0) {
-      const lastPoint = path[path.length - 1];
+    for (let i = 0; i < sectionEntries.length; i++) {
+      const [key1, sec1] = sectionEntries[i];
       
-      // Add points in correct order based on connection
-      if (pointsEqual(lastPoint, start)) {
-        path.push(end);
-      } else if (pointsEqual(lastPoint, end)) {
-        path.push(start);
-      } else {
-        // If no connection found, try to find closest point
-        const startDist = manhattanDistance(lastPoint, start);
-        const endDist = manhattanDistance(lastPoint, end);
-        path.push(startDist < endDist ? start : end);
+      for (let j = i + 1; j < sectionEntries.length; j++) {
+        const [key2, sec2] = sectionEntries[j];
+        
+        if (sec1.function === sec2.function && sec1.overlaps(sec2)) {
+          sec1.merge(sec2);
+          sections.delete(key2);
+          merged = true;
+          break;
+        }
       }
-    } else {
-      // For first section, add second point
-      path.push(end);
-    }
-  }
-  
-  // Remove any duplicate consecutive points
-  return path.filter((point, index) => 
-    index === 0 || !pointsEqual(point, path[index - 1])
-  );
-};
-
-export const optimizeNetworkPaths = (cables = [], machines = {}, walls = [], perforations = [], gridSize = 100) => {
-  if (!Array.isArray(cables) || cables.length === 0) {
-    return { sections: new Map(), cableRoutes: new Map() };
-  }
-
-  const isBlockedGrid = preprocessBlockedGrid(walls, perforations, gridSize);
-  const allSections = new Map();
-  const cableRoutes = new Map();
-
-  // Group cables by network type
-  const networkGroups = cables.reduce((groups, cable) => {
-    const networkType = cable.type || 'unknown';
-    if (!groups[networkType]) groups[networkType] = [];
-    groups[networkType].push(cable);
-    return groups;
-  }, {});
-
-  // Process each network type
-  for (const [networkType, networkCables] of Object.entries(networkGroups)) {
-    const { sections, paths } = findRectilinearSteinerTree(
-      networkCables,
-      machines,
-      isBlockedGrid,
-      gridSize,
-      allSections
-    );
-    
-    // Add sections to global sections map
-    for (const [key, section] of sections.entries()) {
-      allSections.set(key, section);
-    }
-    
-    // Record cable routes
-    networkCables.forEach(cable => {
-      const sourcePos = machines[cable.source];
-      const targetPos = machines[cable.target];
-      if (!sourcePos || !targetPos) return;
       
-      const pathSections = findPathSections(sourcePos, targetPos, sections);
-      const route = reconstructPath(pathSections, sections);
-      if (route) {
-        cableRoutes.set(cable.cableLabel || cable.name, route);
-      }
-    });
-  }
-
-  // Filter out sections with no cables before returning
-  const validSections = new Map();
-  for (const [key, section] of allSections.entries()) {
-    if (section.cables.size > 0) {
-      validSections.set(key, section);
+      if (merged) break;
     }
   }
-
-  return { sections: validSections, cableRoutes };
-};
-
-// Helper to calculate Manhattan distance between points
-const manhattanDistance = (p1, p2) => {
-  return Math.abs(p2.x - p1.x) + Math.abs(p2.y - p1.y);
 };

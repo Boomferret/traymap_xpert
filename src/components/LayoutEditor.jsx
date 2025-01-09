@@ -48,11 +48,6 @@ const DEFAULT_NETWORKS = [
 
 const MAX_NETWORKS = 8;
 
-// Initial machine list
-const initialMachines = Array.from({ length: 10 }, (_, i) => ({
-  name: `M${i + 1}`
-}));
-
 const mergeMachines = (machines, cables, machineA, machineB) => {
   // Create new machines object without machineB
   const newMachines = { ...machines };
@@ -107,7 +102,7 @@ export const LayoutEditor = () => {
     const [walls, setWalls] = useState([]);
     const [perforations, setPerforations] = useState([]);
     const [machines, setMachines] = useState({});
-    const [availableMachines, setAvailableMachines] = useState(initialMachines);
+    const [availableMachines, setAvailableMachines] = useState([]);
     const [cables, setCables] = useState([]);
     const [importedCables, setImportedCables] = useState([]);
     const [networks, setNetworks] = useState(DEFAULT_NETWORKS);
@@ -121,76 +116,28 @@ export const LayoutEditor = () => {
       }, {});
     });
     const [inheritMode, setInheritMode] = useState({ active: false, targetMachine: null });
+    const [backendSections, setBackendSections] = useState([]);
+    const [cableRoutes, setCableRoutes] = useState({});
+    const [hananGrid, setHananGrid] = useState({ xCoords: [], yCoords: [] });
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [hoveredCable, setHoveredCable] = useState(null);
+    const [hoveredNetwork, setHoveredNetwork] = useState(null);
   
     useEffect(() => {
+      // Only calculate paths when we have at least 2 machines and some cables to route
       const machineCount = Object.keys(machines).length;
-      if (machineCount >= 2) {
-        if (importedCables.length > 0) {
-          // Group cables by their function
-          const visibleNetworks = networks.filter(n => n.visible);
-          const visibleFunctions = visibleNetworks.flatMap(n => n.functions);
-          
-          // Get all valid machine names including merged ones
-          const validMachineNames = new Set();
-          const mergedMachineMap = new Map(); // Map original names to current names
-          
-          Object.entries(machines).forEach(([name, machine]) => {
-            if (machine.mergedHistory) {
-              Object.keys(machine.mergedHistory).forEach(originalName => {
-                validMachineNames.add(originalName);
-                mergedMachineMap.set(originalName, name);
-              });
-            } else {
-              validMachineNames.add(name);
-              mergedMachineMap.set(name, name);
-            }
-          });
-          
-          const relevantCables = importedCables.filter(cable => {
-            // Check if either the original or current source/target is a valid machine
-            const sourceValid = validMachineNames.has(cable.source) || validMachineNames.has(cable.originalSource);
-            const targetValid = validMachineNames.has(cable.target) || validMachineNames.has(cable.originalTarget);
-            return sourceValid && targetValid && visibleFunctions.includes(cable.cableFunction);
-          }).map(cable => {
-            // Find the network this cable belongs to
-            const network = networks.find(n => n.functions.includes(cable.cableFunction));
-            
-            // Update source and target to current machine names while preserving originals
-            const newCable = {
-              ...cable,
-              type: network?.name || 'unknown',
-              color: network?.color || '#999999',
-              diameter: cable.diameter
-            };
-
-            // If source is merged, update it
-            if (validMachineNames.has(cable.source)) {
-              const currentMachine = mergedMachineMap.get(cable.source);
-              if (currentMachine !== cable.source) {
-                newCable.originalSource = cable.source;
-                newCable.source = currentMachine;
-              }
-            }
-
-            // If target is merged, update it
-            if (validMachineNames.has(cable.target)) {
-              const currentMachine = mergedMachineMap.get(cable.target);
-              if (currentMachine !== cable.target) {
-                newCable.originalTarget = cable.target;
-                newCable.target = currentMachine;
-              }
-            }
-
-            return newCable;
-          });
-
-          setCables(relevantCables);
-        } else {
-          const newCables = generateRandomCables(machines);
-          setCables(newCables);
-        }
+      const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
+        .filter(cable => machines[cable.source] && machines[cable.target]);
+      
+      if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
+        // Debounce the path calculation to avoid too frequent updates
+        const timer = setTimeout(() => {
+          fetchOptimalPaths();
+        }, 500);
+        return () => clearTimeout(timer);
       }
-    }, [machines, importedCables, networks]);
+    }, [machines, walls, perforations]); // Only recalculate when physical layout changes
 
     const handleFileUpload = async (e) => {
         const file = e.target.files[0];
@@ -205,15 +152,31 @@ export const LayoutEditor = () => {
               suppliedBy, cableFunction, , , remarks
             ] = line.split(';').map(field => field.replace(/"/g, '').trim());
     
+            // Normalize machine names by removing '+' prefix
+            const normalizeDeviceName = (name) => {
+              if (!name) return '';
+              return name.replace(/^\+/, '');
+            };
+            const normalizedSourceDevice = normalizeDeviceName(sourceDevice);
+            const normalizedTargetDevice = normalizeDeviceName(targetDevice);
+    
+            // Parse diameter: convert from "X,Ymm" format to number
+            let parsedDiameter = null;
+            if (diameter) {
+              // Remove 'mm' and replace comma with dot
+              const cleanDiameter = diameter.replace('mm', '').replace(',', '.');
+              parsedDiameter = parseFloat(cleanDiameter);
+            }
+    
             return {
               id,
               cableLabel,
-              source: sourceDevice,
+              source: normalizedSourceDevice,
               sourceLocation,
-              target: targetDevice,
+              target: normalizedTargetDevice,
               targetLocation,
               length,
-              diameter,
+              diameter: parsedDiameter,
               cableType,
               cableFunction,
               internalExternal
@@ -222,7 +185,7 @@ export const LayoutEditor = () => {
     
           setImportedCables(cables);
     
-          // Extract unique machines
+          // Extract unique machines with normalized names
           const uniqueMachines = new Set();
           cables.forEach(cable => {
             if (cable.source) uniqueMachines.add(cable.source);
@@ -246,14 +209,61 @@ export const LayoutEditor = () => {
         setEditorMode(EditorModes.MACHINE);
       };
     
-      const handleWallAdd = useCallback((x, y) => {
-        setWalls(prevWalls => {
-          const wallExists = prevWalls.some(wall => wall.x === x && wall.y === y);
-          if (wallExists) {
-            return prevWalls.filter(wall => !(wall.x === x && wall.y === y));
+      const handleWallAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
+        // If no end coordinates provided, treat as single wall
+        if (endX === undefined || endY === undefined) {
+          setWalls(prevWalls => {
+            const wallExists = prevWalls.some(wall => wall.x === startX && wall.y === startY);
+            if (wallExists) {
+              return prevWalls.filter(wall => !(wall.x === startX && wall.y === startY));
+            }
+            return [...prevWalls, { x: startX, y: startY }];
+          });
+          return;
+        }
+
+        // Calculate all points along the line using Bresenham's line algorithm
+        const points = [];
+        const dx = Math.abs(endX - startX);
+        const dy = Math.abs(endY - startY);
+        const sx = startX < endX ? 1 : -1;
+        const sy = startY < endY ? 1 : -1;
+        let err = dx - dy;
+
+        let x = startX;
+        let y = startY;
+
+        while (true) {
+          points.push({ x, y });
+
+          if (x === endX && y === endY) break;
+
+          const e2 = 2 * err;
+          if (e2 > -dy) {
+            err -= dy;
+            x += sx;
           }
-          return [...prevWalls, { x, y }];
-        });
+          if (e2 < dx) {
+            err += dx;
+            y += sy;
+          }
+        }
+
+        // Only update walls state when not dragging (i.e., on mouse up)
+        if (!isDragging) {
+          setWalls(prevWalls => {
+            const newWalls = [...prevWalls];
+            points.forEach(point => {
+              const wallExists = prevWalls.some(wall => wall.x === point.x && wall.y === point.y);
+              if (!wallExists) {
+                newWalls.push({ x: point.x, y: point.y });
+              }
+            });
+            return newWalls;
+          });
+        }
+
+        return points; // Return points for preview
       }, []);
     
       const handlePerforationAdd = useCallback((x, y) => {
@@ -479,6 +489,80 @@ export const LayoutEditor = () => {
         setShowInitialSetup(false);
       };
 
+      const fetchOptimalPaths = async () => {
+        try {
+          setIsLoading(true);
+          // Get all available cables
+          const allCables = importedCables.length > 0 ? importedCables : cables;
+          
+          // Filter cables to only include those where both machines are placed
+          const availableCables = allCables.filter(cable => {
+            const sourceExists = machines.hasOwnProperty(cable.source);
+            const targetExists = machines.hasOwnProperty(cable.target);
+            return sourceExists && targetExists;
+          });
+
+          // Only proceed if we have cables to route
+          if (availableCables.length === 0) {
+            return;
+          }
+
+          const requestData = {
+            width: canvasConfig.width * 10,
+            height: canvasConfig.height * 10,
+            walls,
+            perforations,
+            machines,
+            cables: availableCables,
+            networks: networks.map(network => ({
+              id: network.id,
+              name: network.name,
+              functions: network.functions
+            }))
+          };
+
+          console.log("Sending data to backend:", requestData);
+
+          const response = await fetch('/api/optimize-paths', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(requestData)
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          const data = await response.json();
+          console.log("Received data from backend:", data);
+          
+          // Expected backend response format:
+          // {
+          //   sections: [{
+          //     points: [{x: number, y: number}],
+          //     networkFunction: string,
+          //     cables: Cable[]
+          //   }],
+          //   hananGrid: {
+          //     xCoords: number[],
+          //     yCoords: number[]
+          //   }
+          // }
+          
+          if (data.sections) {
+            setBackendSections(data.sections);
+            setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
+          }
+        } catch (error) {
+          console.error("Error fetching optimal paths:", error);
+          setError(`Error fetching optimal paths: ${error.message}`);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
       return (
         <div className="flex flex-col h-full gap-4">
           <InitialSetupModal
@@ -665,7 +749,10 @@ export const LayoutEditor = () => {
         <Card className="flex-1 p-6 min-h-[600px] flex items-center justify-center bg-gray-50">
           <div className="bg-white rounded-lg shadow-sm p-4">
             <LayoutGrid
-              gridSize={canvasConfig.width * 10}
+              gridSize={{
+                width: canvasConfig.width * 10,
+                height: canvasConfig.height * 10
+              }}
               cellSize={10}
               walls={walls}
               perforations={perforations}
@@ -683,6 +770,13 @@ export const LayoutEditor = () => {
               onNetworkVisibilityChange={setNetworkVisibility}
               backgroundImage={canvasConfig.backgroundImage}
               onMachineInherit={handleMachineInherit}
+              backendSections={backendSections}
+              cableRoutes={cableRoutes}
+              hananGrid={hananGrid}
+              hoveredCable={hoveredCable}
+              onCableHover={setHoveredCable}
+              hoveredNetwork={hoveredNetwork}
+              onNetworkHover={setHoveredNetwork}
             />
           </div>
         </Card>
@@ -711,15 +805,22 @@ export const LayoutEditor = () => {
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2 flex-1">
                     <Switch
-                      checked={network.visible}
+                      checked={networkVisibility[network.name] !== false}
                       onCheckedChange={(checked) => 
-                        handleNetworkVisibilityChange(network.id, checked)
+                        handleNetworkVisibilityChange({
+                          ...networkVisibility,
+                          [network.name]: checked
+                        })
                       }
                     />
                     <div className="flex items-center gap-2">
                       <div 
-                        className="w-4 h-4 rounded-full" 
+                        className={`w-4 h-4 rounded-full transition-transform ${
+                          hoveredNetwork === network.name ? 'scale-125' : ''
+                        }`}
                         style={{ backgroundColor: network.color }}
+                        onMouseEnter={() => setHoveredNetwork(network.name)}
+                        onMouseLeave={() => setHoveredNetwork(null)}
                       />
                       {network.isDefault ? (
                         <span className="font-medium">{network.name}</span>

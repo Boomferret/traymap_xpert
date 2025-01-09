@@ -10,21 +10,25 @@ export const NetworkConfig = ({ cableFunctions, onNetworksChange }) => {
     {
       id: '1',
       name: 'Power Network',
+      color: '#ef4444', // Red
       functions: ['POWER SUPPLY CAT. C2', 'POWER SUPPLY CAT. C3']
     },
     {
       id: '2',
       name: 'Control Network',
+      color: '#2563eb', // Blue
       functions: ['CONTROL', 'MEASUREMENT', 'SIGNAL', 'OPTICAL']
     },
     {
       id: '3',
       name: 'HV Network',
+      color: '#7c3aed', // Purple
       functions: ['DC HIGH VOLTAGE']
     },
     {
       id: '4',
       name: 'Ground Network',
+      color: '#059669', // Green
       functions: ['GROUNDING AND EQUIPOTENTIAL VOLTAGE']
     }
   ]);
@@ -46,7 +50,13 @@ export const NetworkConfig = ({ cableFunctions, onNetworksChange }) => {
       <div className="grid grid-cols-4 gap-4">
         {networks.map((network, networkIndex) => (
           <Card key={network.id} className="p-4">
-            <h3 className="font-medium mb-2">{network.name}</h3>
+            <div className="flex items-center gap-2 mb-2">
+              <div 
+                className="w-4 h-4 rounded" 
+                style={{ backgroundColor: network.color }}
+              />
+              <h3 className="font-medium">{network.name}</h3>
+            </div>
             <Droppable droppableId={networkIndex.toString()}>
               {(provided) => (
                 <div

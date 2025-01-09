@@ -23,6 +23,82 @@ const TRAY_SIZES = [
   label: `${size.width}×${size.height}mm (${(size.width * size.height).toLocaleString()}mm²)`
 }));
 
+const generateDistinctShades = (baseColor, numberOfShades) => {
+  const hex2HSL = (hex) => {
+    hex = hex.replace('#', '');
+    const r = parseInt(hex.substring(0, 2), 16) / 255;
+    const g = parseInt(hex.substring(2, 4), 16) / 255;
+    const b = parseInt(hex.substring(4, 6), 16) / 255;
+    
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+
+    if (max === min) {
+      h = s = 0;
+    } else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+        case g: h = (b - r) / d + 2; break;
+        case b: h = (r - g) / d + 4; break;
+      }
+      h /= 6;
+    }
+
+    return [h * 360, s * 100, l * 100];
+  };
+
+  const HSL2hex = (h, s, l) => {
+    h /= 360;
+    s /= 100;
+    l /= 100;
+    let r, g, b;
+
+    if (s === 0) {
+      r = g = b = l;
+    } else {
+      const hue2rgb = (p, q, t) => {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1/6) return p + (q - p) * 6 * t;
+        if (t < 1/2) return q;
+        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+        return p;
+      };
+
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      const p = 2 * l - q;
+      r = hue2rgb(p, q, h + 1/3);
+      g = hue2rgb(p, q, h);
+      b = hue2rgb(p, q, h - 1/3);
+    }
+
+    const toHex = x => {
+      const hex = Math.round(x * 255).toString(16);
+      return hex.length === 1 ? '0' + hex : hex;
+    };
+
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  };
+
+  const [h, s, l] = hex2HSL(baseColor);
+  
+  // Generate more distinct shades by varying hue, saturation, and lightness
+  return Array.from({ length: numberOfShades }, (_, i) => {
+    // Allow hue to vary slightly (±15 degrees)
+    const hueOffset = (i - numberOfShades/2) * (30 / numberOfShades);
+    const newH = (h + hueOffset + 360) % 360;
+    
+    // Create more dramatic variations in saturation and lightness
+    const newS = Math.min(100, Math.max(40, s + (i - numberOfShades/2) * (60 / numberOfShades)));
+    const newL = Math.min(80, Math.max(30, l + (i - numberOfShades/2) * (50 / numberOfShades)));
+    
+    return HSL2hex(newH, newS, newL);
+  });
+};
+
 export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
   const svgRef = useRef(null);
   const [cablesWithDiameters, setCablesWithDiameters] = useState([]);
@@ -30,6 +106,8 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
   const [tooltip, setTooltip] = useState({ show: false, content: '', x: 0, y: 0 });
   const [selectedTraySize, setSelectedTraySize] = useState(TRAY_SIZES[27]); // Default to 300×75mm
   const [fillMetrics, setFillMetrics] = useState({ heightPercent: 0, areaPercent: 0 });
+  const [svgDimensions, setSvgDimensions] = useState({ width: 0, height: 0 });
+  const [scale, setScale] = useState(2); // Default scale
 
   // Constants for visualization
   const MM_TO_PX = 2; // Scale factor to convert mm to pixels
@@ -40,49 +118,96 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
   // Function to get color based on network and function
   const getColorForCable = (cable) => {
     if (cable.color) return cable.color;
-    const network = networks.find(n => n.functions.includes(cable.function));
-    if (network) {
-      return network.color;
-    }
-    return '#999999'; // Default gray for unknown networks
+    
+    // Find the network this cable belongs to
+    const network = networks.find(n => n.functions.includes(cable.cableFunction || cable.function));
+    if (!network) return '#999999';
+    
+    // Get all functions for this network
+    const networkFunctions = network.functions;
+    // Find the index of this cable's function in the network's functions
+    const functionIndex = networkFunctions.indexOf(cable.cableFunction || cable.function);
+    
+    // Generate shades based on the network's base color
+    const shades = generateDistinctShades(network.color, networkFunctions.length || 1);
+    
+    // Return the appropriate shade for this function
+    return shades[functionIndex] || network.color;
   };
 
   // Group cables by function for the legend
   const getCableFunctions = (cables) => {
-    const functionMap = new Map();
+    const networkMap = new Map();
     
+    // First, create network groups with their functions
+    networks.forEach(network => {
+      networkMap.set(network.name, {
+        networkName: network.name,
+        baseColor: network.color,
+        functions: new Map()
+      });
+    });
+    
+    // Then process each cable
     cables.forEach(cable => {
-      const functionKey = cable.function || 'Unknown';
+      const network = networks.find(n => n.functions.includes(cable.cableFunction || cable.function));
+      if (!network) return;
       
-      if (!functionMap.has(functionKey)) {
-        functionMap.set(functionKey, {
+      const networkGroup = networkMap.get(network.name);
+      const functionKey = cable.cableFunction || cable.function;
+      
+      if (!networkGroup.functions.has(functionKey)) {
+        // Generate color based on function's position in network's function list
+        const functionIndex = network.functions.indexOf(functionKey);
+        const shades = generateDistinctShades(network.color, network.functions.length);
+        const color = shades[functionIndex];
+        
+        networkGroup.functions.set(functionKey, {
           function: functionKey,
-          network: cable.network || cable.type || 'Unknown',
-          color: cable.color || '#999999'
+          color: color
         });
       }
     });
     
-    return Array.from(functionMap.values());
+    return Array.from(networkMap.values())
+      .filter(group => group.functions.size > 0); // Only return networks that have cables
   };
 
   // Calculate SVG dimensions based on tray size
   const getSVGDimensions = (traySize) => {
-    const requiredWidth = (traySize.width * MM_TO_PX) + (SVG_PADDING * 2);
-    const requiredHeight = (traySize.height * MM_TO_PX) + (SVG_PADDING * 2);
+    // Target size we want the tray to occupy (leaving room for padding and labels)
+    const TARGET_WIDTH = MIN_SVG_WIDTH - (SVG_PADDING * 3);
+    const TARGET_HEIGHT = MIN_SVG_HEIGHT - (SVG_PADDING * 3);
+    
+    // Calculate scale factors for width and height
+    // Increase the target size by multiplying by 1.5 to make everything bigger
+    const widthScale = (TARGET_WIDTH * 1.5) / traySize.width;
+    const heightScale = (TARGET_HEIGHT * 1.5) / traySize.height;
+    
+    // Use the smaller scale to maintain aspect ratio
+    const newScale = Math.min(widthScale, heightScale);
+    
+    // Set a higher minimum scale (3 instead of 1)
+    const scale = Math.max(newScale, 3);
+    
+    const requiredWidth = (traySize.width * scale) + (SVG_PADDING * 2);
+    const requiredHeight = (traySize.height * scale) + (SVG_PADDING * 2);
     
     return {
       width: Math.max(MIN_SVG_WIDTH, requiredWidth),
-      height: Math.max(MIN_SVG_HEIGHT, requiredHeight)
+      height: Math.max(MIN_SVG_HEIGHT, requiredHeight),
+      scale: scale
     };
   };
 
-  // Calculate initial dimensions
-  const [svgDimensions, setSvgDimensions] = useState(getSVGDimensions(selectedTraySize));
-
   // Update dimensions when tray size changes
   useEffect(() => {
-    setSvgDimensions(getSVGDimensions(selectedTraySize));
+    const dimensions = getSVGDimensions(selectedTraySize);
+    setSvgDimensions({
+      width: dimensions.width,
+      height: dimensions.height
+    });
+    setScale(dimensions.scale);
   }, [selectedTraySize]);
 
   // Helper function to parse diameter string
@@ -128,9 +253,12 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
 
     // Find highest point of any cable (lowest y value since SVG coordinates)
     const highestPoint = Math.min(...nodes.map(n => n.y - n.radius));
-    const trayBottom = trayY + trayHeight * MM_TO_PX;
+    const trayBottom = trayY + trayHeight * scale;
+    
+    // Calculate used height from the bottom of the tray to the highest cable point
     const usedHeight = trayBottom - highestPoint;
-    const heightPercent = (usedHeight / (trayHeight * MM_TO_PX)) * 100;
+    // Calculate height percentage relative to total tray height
+    const heightPercent = (usedHeight / (trayHeight * scale)) * 100;
 
     // Calculate total area of cables vs tray area (in mm²)
     const totalCableArea = nodes.reduce((sum, n) => sum + Math.PI * Math.pow((n.diameter / 2), 2), 0);
@@ -138,7 +266,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     const areaPercent = (totalCableArea / trayArea) * 100;
 
     return {
-      heightPercent: Math.min(Math.round(heightPercent), 100),
+      heightPercent: Math.max(0, Math.min(Math.round(heightPercent), 100)), // Ensure value is between 0 and 100
       areaPercent: Math.min(Math.round(areaPercent), 100)
     };
   };
@@ -223,21 +351,19 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     if (!isOpen || !svgRef.current || !cablesWithDiameters || cablesWithDiameters.length === 0) return;
 
     const { width: SVG_WIDTH, height: SVG_HEIGHT } = svgDimensions;
-    const trayX = (SVG_WIDTH - selectedTraySize.width * MM_TO_PX) / 2;
-    const trayY = (SVG_HEIGHT - selectedTraySize.height * MM_TO_PX) / 2;
+    const trayX = (SVG_WIDTH - selectedTraySize.width * scale) / 2;
+    const trayY = (SVG_HEIGHT - selectedTraySize.height * scale) / 2;
     
-    // Create nodes for each cable
+    // Create nodes for each cable with the new scale
     const nodes = cablesWithDiameters.flatMap(cable => 
       Array.from({ length: cable.count }, () => ({
-        x: trayX + Math.random() * (selectedTraySize.width * MM_TO_PX),
+        x: trayX + Math.random() * (selectedTraySize.width * scale),
         y: trayY + Math.random() * 20,
-        radius: cable.diameter * MM_TO_PX / 2,
+        radius: cable.diameter * scale / 2,
         diameter: cable.diameter,
         label: cable.cableLabel,
-        function: cable.cableFunction,
-        network: cable.type === 'power' ? 'power' : 
-                cable.type === 'control' ? 'control' : 
-                cable.network || 'other',
+        function: cable.cableFunction || cable.function || 'Unknown',
+        network: cable.network || 'Unknown',
         vy: 0
       }))
     );
@@ -250,9 +376,6 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
 
     // Create color scale based on unique cable labels
     const uniqueLabels = [...new Set(nodes.map(d => d.label))].sort();
-    const colorScale = d3.scaleOrdinal()
-      .domain(uniqueLabels)
-      .range(d3.schemeSet3);
 
     // Clear previous SVG content
     d3.select(svgRef.current).selectAll("*").remove();
@@ -266,8 +389,8 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     svg.append("rect")
       .attr("x", trayX)
       .attr("y", trayY)
-      .attr("width", selectedTraySize.width * MM_TO_PX)
-      .attr("height", selectedTraySize.height * MM_TO_PX)
+      .attr("width", selectedTraySize.width * scale)
+      .attr("height", selectedTraySize.height * scale)
       .attr("fill", "none")
       .attr("stroke", "#333")
       .attr("stroke-width", 2);
@@ -300,29 +423,29 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     // Horizontal line with arrows
     widthDimensionGroup.append("line")
       .attr("x1", trayX)
-      .attr("y1", trayY + selectedTraySize.height * MM_TO_PX + dimensionOffset)
-      .attr("x2", trayX + selectedTraySize.width * MM_TO_PX)
-      .attr("y2", trayY + selectedTraySize.height * MM_TO_PX + dimensionOffset)
+      .attr("y1", trayY + selectedTraySize.height * scale + dimensionOffset)
+      .attr("x2", trayX + selectedTraySize.width * scale)
+      .attr("y2", trayY + selectedTraySize.height * scale + dimensionOffset)
       .attr("marker-start", "url(#arrow)")
       .attr("marker-end", "url(#arrow)");
 
     // Vertical extension lines
     widthDimensionGroup.append("line")
       .attr("x1", trayX)
-      .attr("y1", trayY + selectedTraySize.height * MM_TO_PX)
+      .attr("y1", trayY + selectedTraySize.height * scale)
       .attr("x2", trayX)
-      .attr("y2", trayY + selectedTraySize.height * MM_TO_PX + dimensionOffset);
+      .attr("y2", trayY + selectedTraySize.height * scale + dimensionOffset);
 
     widthDimensionGroup.append("line")
-      .attr("x1", trayX + selectedTraySize.width * MM_TO_PX)
-      .attr("y1", trayY + selectedTraySize.height * MM_TO_PX)
-      .attr("x2", trayX + selectedTraySize.width * MM_TO_PX)
-      .attr("y2", trayY + selectedTraySize.height * MM_TO_PX + dimensionOffset);
+      .attr("x1", trayX + selectedTraySize.width * scale)
+      .attr("y1", trayY + selectedTraySize.height * scale)
+      .attr("x2", trayX + selectedTraySize.width * scale)
+      .attr("y2", trayY + selectedTraySize.height * scale + dimensionOffset);
 
     // Width dimension text
     widthDimensionGroup.append("text")
-      .attr("x", trayX + (selectedTraySize.width * MM_TO_PX) / 2)
-      .attr("y", trayY + selectedTraySize.height * MM_TO_PX + dimensionOffset - 5)
+      .attr("x", trayX + (selectedTraySize.width * scale) / 2)
+      .attr("y", trayY + selectedTraySize.height * scale + dimensionOffset - 5)
       .attr("text-anchor", "middle")
       .attr("fill", dimensionColor)
       .attr("font-size", "12px")
@@ -339,7 +462,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("x1", trayX - dimensionOffset)
       .attr("y1", trayY)
       .attr("x2", trayX - dimensionOffset)
-      .attr("y2", trayY + selectedTraySize.height * MM_TO_PX)
+      .attr("y2", trayY + selectedTraySize.height * scale)
       .attr("marker-start", "url(#arrow)")
       .attr("marker-end", "url(#arrow)");
 
@@ -352,18 +475,18 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
 
     heightDimensionGroup.append("line")
       .attr("x1", trayX - dimensionOffset)
-      .attr("y1", trayY + selectedTraySize.height * MM_TO_PX)
+      .attr("y1", trayY + selectedTraySize.height * scale)
       .attr("x2", trayX)
-      .attr("y2", trayY + selectedTraySize.height * MM_TO_PX);
+      .attr("y2", trayY + selectedTraySize.height * scale);
 
     // Height dimension text
     heightDimensionGroup.append("text")
       .attr("x", trayX - dimensionOffset - 5)
-      .attr("y", trayY + (selectedTraySize.height * MM_TO_PX) / 2)
+      .attr("y", trayY + (selectedTraySize.height * scale) / 2)
       .attr("text-anchor", "middle")
       .attr("fill", dimensionColor)
       .attr("font-size", "12px")
-      .attr("transform", `rotate(-90, ${trayX - dimensionOffset - 5}, ${trayY + (selectedTraySize.height * MM_TO_PX) / 2})`)
+      .attr("transform", `rotate(-90, ${trayX - dimensionOffset - 5}, ${trayY + (selectedTraySize.height * scale) / 2})`)
       .text(`${selectedTraySize.height}mm`);
 
     // Add measurement axes on right and top sides
@@ -373,11 +496,11 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .style("stroke-width", 1);
 
     // Right side axis (height)
-    const rightAxisX = trayX + selectedTraySize.width * MM_TO_PX + dimensionOffset;
+    const rightAxisX = trayX + selectedTraySize.width * scale + dimensionOffset;
     const heightTicks = Math.floor(selectedTraySize.height / 25);
     
     for (let i = 0; i <= heightTicks; i++) {
-      const yPos = trayY + selectedTraySize.height * MM_TO_PX - (i * 25 * MM_TO_PX); // Reversed Y position
+      const yPos = trayY + selectedTraySize.height * scale - (i * 25 * scale); // Reversed Y position
       // Draw tick
       axisGroup.append("line")
         .attr("x1", rightAxisX)
@@ -398,7 +521,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     const widthTicks = Math.floor(selectedTraySize.width / 25);
     
     for (let i = 0; i <= widthTicks; i++) {
-      const xPos = trayX + i * 25 * MM_TO_PX;
+      const xPos = trayX + i * 25 * scale;
       // Draw tick
       axisGroup.append("line")
         .attr("x1", xPos)
@@ -418,7 +541,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     // Draw fill height indicator line
     const fillLine = svg.append("line")
       .attr("x1", trayX)
-      .attr("x2", trayX + selectedTraySize.width * MM_TO_PX)
+      .attr("x2", trayX + selectedTraySize.width * scale)
       .attr("stroke", "#ef4444")
       .attr("stroke-width", 2)
       .attr("stroke-dasharray", "4");
@@ -436,7 +559,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
         const [mouseX, mouseY] = d3.pointer(event);
         setTooltip({
           show: true,
-          content: `${d.label}\nØ ${d.diameter}mm\nFunction: ${d.function || 'Unknown'}\nNetwork: ${d.network || 'Unknown'}`,
+          content: `${d.label}\nØ ${d.diameter}mm\nFunction: ${d.function}\nNetwork: ${d.network}`,
           x: mouseX,
           y: mouseY
         });
@@ -489,8 +612,8 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
 
           // Constrain to tray boundaries
           const leftWall = trayX + d.radius;
-          const rightWall = trayX + selectedTraySize.width * MM_TO_PX - d.radius;
-          const bottomWall = trayY + selectedTraySize.height * MM_TO_PX - d.radius;
+          const rightWall = trayX + selectedTraySize.width * scale - d.radius;
+          const bottomWall = trayY + selectedTraySize.height * scale - d.radius;
           const topWall = trayY + d.radius;
 
           // Horizontal constraints with slight damping
@@ -527,7 +650,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     return () => {
       simulation.stop();
     };
-  }, [isOpen, cablesWithDiameters, selectedTraySize, svgDimensions]);
+  }, [isOpen, cablesWithDiameters, selectedTraySize, svgDimensions, scale]);
 
   // Calculate required modal dimensions including legend and controls
   const getModalDimensions = () => {
@@ -627,16 +750,28 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
           {/* Cable Legend */}
           <div className="space-y-2 w-full">
             <h3 className="font-medium text-gray-700">Cable Functions</h3>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {getCableFunctions(cablesWithDiameters).map(({ function: func, network, color }) => (
-                <div key={func} className="flex items-center gap-2 p-1 rounded hover:bg-gray-100">
-                  <div 
-                    className="w-4 h-4 rounded-full border border-gray-300" 
-                    style={{ backgroundColor: color }}
-                  />
-                  <span className="text-sm text-gray-600">
-                    {func} ({network})
-                  </span>
+            <div className="space-y-4">
+              {getCableFunctions(cablesWithDiameters).map((networkGroup) => (
+                <div key={networkGroup.networkName} className="space-y-1">
+                  <div className="font-medium text-sm text-gray-700 pb-1 border-b">
+                    {networkGroup.networkName}
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {Array.from(networkGroup.functions.values()).map(({ function: func, color }) => (
+                      <div 
+                        key={func} 
+                        className="flex items-center gap-2 p-1 rounded hover:bg-gray-100"
+                      >
+                        <div 
+                          className="w-4 h-4 rounded-full border border-gray-300" 
+                          style={{ backgroundColor: color }}
+                        />
+                        <span className="text-sm text-gray-600">
+                          {func}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
