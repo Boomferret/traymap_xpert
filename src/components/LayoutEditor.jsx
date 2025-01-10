@@ -123,6 +123,7 @@ export const LayoutEditor = () => {
     const [error, setError] = useState('');
     const [hoveredCable, setHoveredCable] = useState(null);
     const [hoveredNetwork, setHoveredNetwork] = useState(null);
+    const [steinerPoints, setSteinerPoints] = useState([]);
   
     useEffect(() => {
       // Only calculate paths when we have at least 2 machines and some cables to route
@@ -554,6 +555,7 @@ export const LayoutEditor = () => {
           if (data.sections) {
             setBackendSections(data.sections);
             setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
+            setSteinerPoints(data.steinerPoints || []);
           }
         } catch (error) {
           console.error("Error fetching optimal paths:", error);
@@ -777,6 +779,7 @@ export const LayoutEditor = () => {
               onCableHover={setHoveredCable}
               hoveredNetwork={hoveredNetwork}
               onNetworkHover={setHoveredNetwork}
+              steinerPoints={steinerPoints}
             />
           </div>
         </Card>

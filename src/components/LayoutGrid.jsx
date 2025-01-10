@@ -160,7 +160,8 @@ export const LayoutGrid = ({
     cableRoutes = {},
     hananGrid = { xCoords: [], yCoords: [] },
     hoveredNetwork,
-    onNetworkHover
+    onNetworkHover,
+    steinerPoints = []
 }) => {
     const [isDragging, setIsDragging] = useState(false);
     const [dragPosition, setDragPosition] = useState(null);
@@ -748,6 +749,7 @@ export const LayoutGrid = ({
 
             // Check if this section contains the hovered cable
             const containsHoveredCable = hoveredCable && section.cables.includes(hoveredCable);
+            const isNetworkHovered = hoveredNetwork === section.network;
 
             return (
               <g 
@@ -755,21 +757,22 @@ export const LayoutGrid = ({
                 style={{
                   opacity: (
                     (hoveredSection !== null && hoveredSection !== index && !selectedElement) ||
-                    (hoveredCable && !containsHoveredCable)
+                    (hoveredCable && !containsHoveredCable) ||
+                    (hoveredNetwork && !isNetworkHovered)
                   ) ? 0.2 : 1,
                   transition: 'all 0.2s ease'
                 }}
               >
                 <path
                   d={`M ${section.points.map(p => `${p.x * cellSize + cellSize/2} ${p.y * cellSize + cellSize/2}`).join(' L ')}`}
-                  stroke={section.network === hoveredNetwork ? '#000' : getNetworkColor(section.network)}
-                  strokeWidth={section.strokeWidth || 4}
+                  stroke={getNetworkColor(section.network)}
+                  strokeWidth={isNetworkHovered ? (section.strokeWidth || 4) * 1.2 : (section.strokeWidth || 4)}
                   fill="none"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   style={{
                     transition: 'all 0.2s ease',
-                    filter: containsHoveredCable ? 'drop-shadow(0 0 3px rgba(0,0,0,0.3))' : 'none',
+                    filter: (containsHoveredCable || isNetworkHovered) ? 'drop-shadow(0 0 3px rgba(0,0,0,0.3))' : 'none',
                     strokeDasharray: containsHoveredCable ? '4 2' : 'none'
                   }}
                 />
@@ -816,6 +819,34 @@ export const LayoutGrid = ({
           })}
         </>
       );
+    };
+
+    // Add a new render function for Steiner points
+    const renderSteinerPoints = () => {
+        return steinerPoints.map((point, index) => (
+            <g key={`steiner-${index}`}>
+                {/* Diamond shape for Steiner point */}
+                <path
+                    d={`M ${point.x * cellSize + cellSize/2} ${point.y * cellSize}
+                       L ${point.x * cellSize + cellSize} ${point.y * cellSize + cellSize/2}
+                       L ${point.x * cellSize + cellSize/2} ${point.y * cellSize + cellSize}
+                       L ${point.x * cellSize} ${point.y * cellSize + cellSize/2} Z`}
+                    fill="#fbbf24"
+                    stroke="#d97706"
+                    strokeWidth="2"
+                    opacity="0.8"
+                />
+                {/* Optional: Add text label */}
+                <text
+                    x={point.x * cellSize + cellSize/2}
+                    y={point.y * cellSize - 5}
+                    textAnchor="middle"
+                    className="text-xs font-medium fill-amber-700"
+                >
+                    S{index + 1}
+                </text>
+            </g>
+        ));
     };
 
     // Main render
@@ -1042,7 +1073,7 @@ export const LayoutGrid = ({
                 ))}
 
                 {/* Machines */}
-                <g key="machines">
+                <g className="machines">
                   {renderMachines()}
                 </g>
 
@@ -1205,6 +1236,11 @@ export const LayoutGrid = ({
                     </button>
                   </div>
                 )}
+
+                {/* Add Steiner points layer between cable paths and machines */}
+                <g className="steiner-points">
+                    {renderSteinerPoints()}
+                </g>
               </svg>
             </div>
           </div>
@@ -1290,14 +1326,17 @@ LayoutGrid.propTypes = {
   cableRoutes: PropTypes.objectOf(PropTypes.arrayOf(PropTypes.shape({
     x: PropTypes.number,
     y: PropTypes.number
-  })
-  )),
+  }))),
   hananGrid: PropTypes.shape({
     xCoords: PropTypes.arrayOf(PropTypes.number),
     yCoords: PropTypes.arrayOf(PropTypes.number)
   }),
   hoveredNetwork: PropTypes.string,
   onNetworkHover: PropTypes.func,
+  steinerPoints: PropTypes.arrayOf(PropTypes.shape({
+    x: PropTypes.number,
+    y: PropTypes.number
+  }))
 };
 
 export default LayoutGrid;
