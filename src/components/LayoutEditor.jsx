@@ -514,7 +514,15 @@ export const LayoutEditor = () => {
             walls,
             perforations,
             machines,
-            cables: availableCables,
+            cables: availableCables.map(cable => ({
+              ...cable,
+              // Ensure cableType is explicitly included
+              cableType: cable.cableType,
+              cableFunction: cable.cableFunction,
+              source: cable.source,
+              target: cable.target,
+              diameter: cable.diameter
+            })),
             networks: networks.map(network => ({
               id: network.id,
               name: network.name,
@@ -538,20 +546,9 @@ export const LayoutEditor = () => {
 
           const data = await response.json();
           console.log("Received data from backend:", data);
-          
-          // Expected backend response format:
-          // {
-          //   sections: [{
-          //     points: [{x: number, y: number}],
-          //     networkFunction: string,
-          //     cables: Cable[]
-          //   }],
-          //   hananGrid: {
-          //     xCoords: number[],
-          //     yCoords: number[]
-          //   }
-          // }
-          
+          console.log("Sample section details:", data.sections[0]?.details);
+          console.log("Sample cable details:", Object.values(data.sections[0]?.details)[0]);
+
           if (data.sections) {
             setBackendSections(data.sections);
             setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
@@ -759,7 +756,7 @@ export const LayoutEditor = () => {
               walls={walls}
               perforations={perforations}
               machines={machines}
-              cables={cables}
+              cables={importedCables.length > 0 ? importedCables : cables}
               networks={networks}
               networkVisibility={networkVisibility}
               activeMode={editorMode}

@@ -292,19 +292,24 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       const diametersMap = new Map();
 
       for (const cable of missingDiameters) {
-        const diameter = prompt(
-          `Enter the diameter (in mm) for cable ${cable.cableLabel}\nExample: 25 for a 25mm diameter cable\nPress Cancel to skip this cable`,
-          ''
-        );
-        
-        if (diameter === null) {
-          diametersMap.set(cable.cableLabel, null);
-        } else {
-          const numDiameter = parseFloat(diameter);
-          if (!isNaN(numDiameter) && numDiameter > 0) {
-            diametersMap.set(cable.cableLabel, numDiameter);
-          } else {
+        let validDiameter = false;
+        while (!validDiameter) {
+          const diameter = prompt(
+            `Enter the diameter (in mm) for cable ${cable.cableLabel}\nExample: 25 for a 25mm diameter cable\nPress Cancel to skip this cable`,
+            ''
+          );
+          
+          if (diameter === null) {
             diametersMap.set(cable.cableLabel, null);
+            validDiameter = true;
+          } else {
+            const numDiameter = parseFloat(diameter);
+            if (!isNaN(numDiameter) && numDiameter > 0 && numDiameter <= 150) { // Max reasonable diameter
+              diametersMap.set(cable.cableLabel, numDiameter);
+              validDiameter = true;
+            } else {
+              alert('Please enter a valid diameter between 0 and 150mm');
+            }
           }
         }
       }

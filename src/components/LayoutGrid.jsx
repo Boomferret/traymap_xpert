@@ -136,6 +136,13 @@ const getMergedMachineName = (name, machine) => {
   return Object.keys(machine.mergedHistory)[0];
 };
 
+// Add this helper function at the top level
+const getMachineCables = (machineName, allCables) => {
+  return allCables.filter(cable => 
+    cable.source === machineName || cable.target === machineName
+  );
+};
+
 export const LayoutGrid = ({ 
     gridSize,
     cellSize,
@@ -191,6 +198,12 @@ export const LayoutGrid = ({
     const [previewWalls, setPreviewWalls] = useState([]);
     const [lastClickPos, setLastClickPos] = useState(null);
     const [hoveredSection, setHoveredSection] = useState(null);
+    const [sectionContextMenu, setSectionContextMenu] = useState({ 
+      show: false, 
+      x: 0, 
+      y: 0, 
+      section: null 
+    });
 
     // Handle background image
     useEffect(() => {
@@ -290,12 +303,12 @@ export const LayoutGrid = ({
           break;
         case EditorModes.MACHINE:
           if (selectedMachine) {
+            e.stopPropagation(); // Prevent clearing selection
             onMachinePlace(coords.x, coords.y);
           }
           break;
       }
-    }, [activeMode, selectedMachine, getGridCoordinates, onWallAdd, onPerforationAdd, 
-        onMachinePlace, moveMode, onMachineMove, gridSize]);
+    }, [activeMode, selectedMachine, moveMode, onWallAdd, onPerforationAdd, onMachinePlace, onMachineMove, gridSize]);
 
     // Section and machine interaction handlers
     const handleMachineDragStart = useCallback((e, machineName) => {
@@ -435,27 +448,26 @@ export const LayoutGrid = ({
         const { x, y, description, mergedHistory } = machine;
         const isSelected = selectedElement?.data?.name === name;
         const isInheritTarget = inheritMode.active && inheritMode.targetMachine === name;
-        const isBeingDragged = draggedMachine === name;
-
-        // Skip if machine is being dragged
-        if (isBeingDragged) return null;
 
         return (
           <g
             key={`machine-${name}`}
             transform={`translate(${x * cellSize}, ${y * cellSize})`}
+            className="cursor-pointer"
+            onMouseEnter={() => handleMachineHover({ ...machine, name }, true)}
+            onMouseLeave={() => handleMachineHover({ ...machine, name }, false)}
             onClick={(e) => {
               e.stopPropagation();
-              handleMachineClick(name);
+              handleMachineClick({ ...machine, name });
             }}
-            onContextMenu={(e) => handleContextMenu(e, name)}
-            onMouseDown={(e) => {
-              if (e.button === 0) { // Left click only
-                handleMachineDragStart(e, name);
-              }
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const rect = svgRef.current.getBoundingClientRect();
+              const x = e.clientX - rect.left;
+              const y = e.clientY - rect.top;
+              setContextMenu({ show: true, x, y, machine: name });
             }}
-            onMouseUp={handleMachineDragEnd}
-            className="cursor-pointer"
           >
             {/* Machine node */}
             <circle
@@ -471,10 +483,21 @@ export const LayoutGrid = ({
               } stroke-2`}
             />
 
+            {/* Label background */}
+            <rect
+              x={cellSize / 2 - 20}
+              y={-24}
+              width={40}
+              height={18}
+              rx={4}
+              fill="white"
+              className="stroke-gray-200"
+            />
+
             {/* Machine label */}
             <text
               x={cellSize / 2}
-              y={-5}
+              y={-12}
               textAnchor="middle"
               className={`text-xs font-medium ${
                 isSelected || isInheritTarget ? 'fill-blue-700' : 'fill-green-700'
@@ -555,47 +578,39 @@ export const LayoutGrid = ({
       });
     };
 
-    // Get machine cables for tooltips
-    const getMachineCables = useCallback((machineName) => {
-      if (!cables || !Array.isArray(cables)) return { sources: [], targets: [] };
-      return {
-        sources: cables.filter(cable => cable.source === machineName),
-        targets: cables.filter(cable => cable.target === machineName)
-      };
-    }, [cables]);
-
-    const handleMachineClick = useCallback((name, powerCables, controlCables, mergedHistory) => {
-      if (inheritMode.active) {
-        if (name !== inheritMode.targetMachine) {
-          onMachineInherit(inheritMode.targetMachine, name);
-          setInheritMode({ active: false, targetMachine: null });
-        }
+    const handleMachineClick = useCallback((machine) => {
+      if (activeMode === EditorModes.MACHINE && selectedMachine) {
         return;
       }
 
-      const machineInfo = {
-        type: 'machine',
-        data: {
-          name,
-          mergedName: getMergedMachineName(name, machines[name]),
-          description: machines[name]?.description,
-          mergedHistory,
-          cables: {
-            sources: [...powerCables, ...controlCables].filter(cable => 
-              Object.keys(mergedHistory).includes(cable.source) || 
-              Object.keys(mergedHistory).includes(cable.originalSource)
-            ),
-            targets: [...powerCables, ...controlCables].filter(cable => 
-              Object.keys(mergedHistory).includes(cable.target) || 
-              Object.keys(mergedHistory).includes(cable.originalTarget)
-            )
+      const machineCables = getMachineCables(machine.name, cables);
+      const cablesWithRoutes = machineCables.map(cable => {
+        const section = backendSections.find(section => {
+          return Array.isArray(section.cables) 
+            ? section.cables.includes(cable.cableLabel)
+            : section.cables.has(cable.cableLabel);
+        });
+        return {
+          ...cable,
+          routeLength: section?.details[cable.cableLabel]?.routeLength
+        };
+      });
+
+      if (selectedElement?.data?.name === machine.name) {
+        setSelectedElement(null);
+        setHoveredElement(null);
+      } else {
+        setSelectedElement({
+          type: 'machine',
+          data: {
+            ...machine,
+            name: machine.name,
+            cables: cablesWithRoutes
           }
-        }
-      };
-      setSelectedElement(prev => 
-        prev?.data?.name === name ? null : machineInfo
-      );
-    }, [inheritMode, onMachineInherit, machines]);
+        });
+        setHoveredElement(null);
+      }
+    }, [cables, backendSections, selectedElement, activeMode, selectedMachine]);
 
     // Add this near the top of the component with other event handlers
     const handleContextMenu = useCallback((e, machineName) => {
@@ -762,6 +777,7 @@ export const LayoutGrid = ({
                   ) ? 0.2 : 1,
                   transition: 'all 0.2s ease'
                 }}
+                onContextMenu={(e) => handleSectionContextMenu(e, section)}
               >
                 <path
                   d={`M ${section.points.map(p => `${p.x * cellSize + cellSize/2} ${p.y * cellSize + cellSize/2}`).join(' L ')}`}
@@ -794,6 +810,7 @@ export const LayoutGrid = ({
                 strokeWidth={(section.strokeWidth || 4) + 10}
                 fill="none"
                 style={{ cursor: 'pointer' }}
+                onContextMenu={(e) => handleSectionContextMenu(e, section)}
                 onMouseEnter={() => {
                   setHoveredSection(index);
                   setHoveredElement({
@@ -825,29 +842,87 @@ export const LayoutGrid = ({
     const renderSteinerPoints = () => {
         return steinerPoints.map((point, index) => (
             <g key={`steiner-${index}`}>
-                {/* Diamond shape for Steiner point */}
-                <path
-                    d={`M ${point.x * cellSize + cellSize/2} ${point.y * cellSize}
-                       L ${point.x * cellSize + cellSize} ${point.y * cellSize + cellSize/2}
-                       L ${point.x * cellSize + cellSize/2} ${point.y * cellSize + cellSize}
-                       L ${point.x * cellSize} ${point.y * cellSize + cellSize/2} Z`}
+                {/* Outer circle for junction */}
+                <circle
+                    cx={point.x * cellSize + cellSize/2}
+                    cy={point.y * cellSize + cellSize/2}
+                    r={6}
                     fill="#fbbf24"
                     stroke="#d97706"
-                    strokeWidth="2"
-                    opacity="0.8"
+                    strokeWidth="1.5"
+                    opacity="0.9"
                 />
-                {/* Optional: Add text label */}
-                <text
-                    x={point.x * cellSize + cellSize/2}
-                    y={point.y * cellSize - 5}
-                    textAnchor="middle"
-                    className="text-xs font-medium fill-amber-700"
-                >
-                    S{index + 1}
-                </text>
+                {/* Inner cross for junction appearance */}
+                <path
+                    d={`M ${point.x * cellSize + cellSize/2} ${point.y * cellSize + cellSize/2 - 4}
+                       v 8
+                       M ${point.x * cellSize + cellSize/2 - 4} ${point.y * cellSize + cellSize/2}
+                       h 8`}
+                    stroke="#d97706"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                />
             </g>
         ));
     };
+
+    // Add this handler near other handlers
+    const handleSectionContextMenu = useCallback((e, section) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = svgRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      setSectionContextMenu({ show: true, x, y, section });
+    }, []);
+
+    // Add click outside handler for section context menu
+    useEffect(() => {
+      const handleClickOutside = (e) => {
+        if (sectionContextMenu.show) {
+          const contextMenuElement = document.querySelector('.context-menu');
+          if (contextMenuElement && !contextMenuElement.contains(e.target)) {
+            setSectionContextMenu({ show: false, x: 0, y: 0, section: null });
+          }
+        }
+      };
+
+      document.addEventListener('click', handleClickOutside);
+      document.addEventListener('contextmenu', handleClickOutside);
+
+      return () => {
+        document.removeEventListener('click', handleClickOutside);
+        document.removeEventListener('contextmenu', handleClickOutside);
+      };
+    }, [sectionContextMenu.show]);
+
+    const handleMachineHover = useCallback((machine, isHovering) => {
+      if (isHovering && !selectedElement) {
+        const machineCables = getMachineCables(machine.name, cables);
+        const cablesWithRoutes = machineCables.map(cable => {
+          const section = backendSections.find(section => {
+            return Array.isArray(section.cables) 
+              ? section.cables.includes(cable.cableLabel)
+              : section.cables.has(cable.cableLabel);
+          });
+          return {
+            ...cable,
+            routeLength: section?.details[cable.cableLabel]?.routeLength
+          };
+        });
+
+        setHoveredElement({
+          type: 'machine',
+          data: {
+            ...machine,
+            name: machine.name,
+            cables: cablesWithRoutes
+          }
+        });
+      } else if (!selectedElement) {
+        setHoveredElement(null);
+      }
+    }, [cables, backendSections, selectedElement]);
 
     // Main render
     return (
@@ -916,6 +991,19 @@ export const LayoutGrid = ({
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseLeave}
                 onClick={(event) => {
+                  // If we're in machine placement mode, just handle the placement
+                  if (activeMode === EditorModes.MACHINE && selectedMachine) {
+                    handleClick(event);
+                    return;
+                  }
+
+                  // If the click wasn't on a machine or section (it bubbled up to here),
+                  // then clear the selection
+                  if (event.target === event.currentTarget) {
+                    setSelectedElement(null);
+                    setHoveredElement(null);
+                  }
+
                   handleClick(event);
                   handleCanvasClick(event);
                 }}
@@ -1241,6 +1329,43 @@ export const LayoutGrid = ({
                 <g className="steiner-points">
                     {renderSteinerPoints()}
                 </g>
+
+                {/* Section Context Menu */}
+                {sectionContextMenu.show && (
+                  <foreignObject
+                    x={sectionContextMenu.x}
+                    y={sectionContextMenu.y}
+                    width={160}
+                    height={80}
+                    style={{ overflow: 'visible' }}
+                  >
+                    <div 
+                      className="context-menu bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
+                      style={{ width: '160px' }}
+                    >
+                      <button
+                        className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                        onClick={() => {
+                          setShowTraySimulation(true);
+                          setSelectedSectionForSimulation(sectionContextMenu.section);
+                          setSectionContextMenu({ show: false, x: 0, y: 0, section: null });
+                        }}
+                      >
+                        <svg 
+                          className="w-4 h-4" 
+                          viewBox="0 0 24 24" 
+                          fill="none" 
+                          stroke="currentColor" 
+                          strokeWidth="2"
+                        >
+                          <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                          <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" />
+                        </svg>
+                        Simulate Cable Tray...
+                      </button>
+                    </div>
+                  </foreignObject>
+                )}
               </svg>
             </div>
           </div>
