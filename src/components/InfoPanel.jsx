@@ -210,11 +210,11 @@ export const InfoPanel = ({ hoveredInfo, selectedElement, onClose, onCableHover 
                     <div className="mt-2 pt-2 border-t border-gray-100">
                       <div>
                         <span className="text-gray-500">From:</span>
-                        <span className="ml-2 text-gray-900">{cable.source || 'N/A'}</span>
+                        <span className="ml-2 text-gray-900">{cable.displaySource || cable.source || 'N/A'}</span>
                       </div>
                       <div>
                         <span className="text-gray-500">To:</span>
-                        <span className="ml-2 text-gray-900">{cable.target || 'N/A'}</span>
+                        <span className="ml-2 text-gray-900">{cable.displayTarget || cable.target || 'N/A'}</span>
                       </div>
                     </div>
                   </div>
@@ -228,11 +228,13 @@ export const InfoPanel = ({ hoveredInfo, selectedElement, onClose, onCableHover 
   };
 
   const renderMachineDetails = (machine) => {
-    // Get all cables where this machine is source or target
+    // Get all cables where this machine is source or target, including merged machines
+    const mergedNames = new Set(Object.keys(machine.mergedHistory || { [machine.name]: true }));
+    
     const sourceCables = Object.values(machine.cables || {})
-      .filter(cable => cable.source === machine.name);
+      .filter(cable => mergedNames.has(cable.originalSource || cable.source));
     const targetCables = Object.values(machine.cables || {})
-      .filter(cable => cable.target === machine.name);
+      .filter(cable => mergedNames.has(cable.originalTarget || cable.target));
 
     // Group cables by function
     const groupByFunction = (cables) => {
@@ -301,6 +303,21 @@ export const InfoPanel = ({ hoveredInfo, selectedElement, onClose, onCableHover 
               </div>
 
               <div className="p-4 space-y-4">
+                {/* Show merged machines */}
+                <div className="space-y-2">
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Machine Designations
+                  </div>
+                  {Object.keys(machine.mergedHistory || { [machine.name]: true }).map(name => (
+                    <div 
+                      key={name}
+                      className="py-1.5 px-3 bg-white rounded border border-gray-100 text-sm text-gray-900"
+                    >
+                      {name}
+                    </div>
+                  ))}
+                </div>
+
                 {/* Add description if available */}
                 {machine.description && (
                   <div className="text-sm text-gray-600 pb-3 border-b border-gray-100">
@@ -400,11 +417,11 @@ export const InfoPanel = ({ hoveredInfo, selectedElement, onClose, onCableHover 
                       <div className="mt-2 pt-2 border-t border-gray-100">
                         <div>
                           <span className="text-gray-500">From:</span>
-                          <span className="ml-2 text-gray-900">{cable.source || 'N/A'}</span>
+                          <span className="ml-2 text-gray-900">{cable.displaySource || cable.source || 'N/A'}</span>
                         </div>
                         <div>
                           <span className="text-gray-500">To:</span>
-                          <span className="ml-2 text-gray-900">{cable.target || 'N/A'}</span>
+                          <span className="ml-2 text-gray-900">{cable.displayTarget || cable.target || 'N/A'}</span>
                         </div>
                       </div>
                     </div>

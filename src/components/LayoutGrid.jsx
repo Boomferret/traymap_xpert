@@ -106,41 +106,54 @@ const MachineLabelComponent = React.memo(({ name, pos, cellSize, svgRef }) => {
         opacity="0.9"
         rx="2"
       />
-      {lines.map((line, i) => (
-        <text
-          key={i}
-          x={labelPos.x}
-          y={labelPos.y + (i - (lines.length - 1) / 2) * 12}
-          textAnchor={labelPos.anchor}
-          className="text-sm font-medium select-none"
-          style={{
-            filter: 'drop-shadow(0px 1px 1px rgba(0,0,0,0.1))',
-            paintOrder: 'stroke',
-            stroke: 'white',
-            strokeWidth: '3px',
-            strokeLinecap: 'round',
-            strokeLinejoin: 'round'
-          }}
-        >
-          {line}
-        </text>
-      ))}
+      <text
+        x={labelPos.x}
+        y={labelPos.y}
+        textAnchor={labelPos.anchor}
+        className="text-sm font-medium select-none"
+        style={{
+          filter: 'drop-shadow(0px 1px 1px rgba(0,0,0,0.1))',
+          paintOrder: 'stroke',
+          stroke: 'white',
+          strokeWidth: '3px',
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round'
+        }}
+      >
+        {name}
+      </text>
     </g>
   );
 });
 
 // Update the helper function to only show first machine name
 const getMergedMachineName = (name, machine) => {
-  if (!machine || !machine.mergedHistory) return name;
-  // Just return the first machine name
-  return Object.keys(machine.mergedHistory)[0];
+  // Always return the original machine name for display
+  return name;
 };
 
 // Add this helper function at the top level
-const getMachineCables = (machineName, allCables) => {
-  return allCables.filter(cable => 
-    cable.source === machineName || cable.target === machineName
-  );
+const getMachineCables = (machineName, allCables, machine) => {
+  // Get all machine names that are part of this merged machine
+  const mergedNames = machine?.mergedHistory ? Object.keys(machine.mergedHistory) : [machineName];
+  const mergedSet = new Set(mergedNames);
+
+  return allCables.filter(cable => {
+    const sourceIsMerged = mergedSet.has(cable.originalSource || cable.source);
+    const targetIsMerged = mergedSet.has(cable.originalTarget || cable.target);
+
+    // Filter out cables that connect between merged machines
+    if (sourceIsMerged && targetIsMerged) {
+      return false;
+    }
+
+    return sourceIsMerged || targetIsMerged;
+  }).map(cable => ({
+    ...cable,
+    // Preserve original machine names in display
+    displaySource: cable.originalSource || cable.source,
+    displayTarget: cable.originalTarget || cable.target
+  }));
 };
 
 export const LayoutGrid = ({ 
@@ -583,7 +596,13 @@ export const LayoutGrid = ({
         return;
       }
 
-      const machineCables = getMachineCables(machine.name, cables);
+      if (inheritMode.active) {
+        onMachineInherit(inheritMode.targetMachine, machine.name);
+        setInheritMode({ active: false, targetMachine: null });
+        return;
+      }
+
+      const machineCables = getMachineCables(machine.name, cables, machines[machine.name]);
       const cablesWithRoutes = machineCables.map(cable => {
         const section = backendSections.find(section => {
           return Array.isArray(section.cables) 
@@ -592,7 +611,10 @@ export const LayoutGrid = ({
         });
         return {
           ...cable,
-          routeLength: section?.details[cable.cableLabel]?.routeLength
+          routeLength: section?.details[cable.cableLabel]?.routeLength,
+          // Ensure we pass through the display names
+          displaySource: cable.displaySource,
+          displayTarget: cable.displayTarget
         };
       });
 
@@ -605,12 +627,13 @@ export const LayoutGrid = ({
           data: {
             ...machine,
             name: machine.name,
-            cables: cablesWithRoutes
+            cables: cablesWithRoutes,
+            mergedHistory: machines[machine.name]?.mergedHistory || { [machine.name]: true }
           }
         });
         setHoveredElement(null);
       }
-    }, [cables, backendSections, selectedElement, activeMode, selectedMachine]);
+    }, [cables, backendSections, selectedElement, activeMode, selectedMachine, inheritMode, onMachineInherit, machines]);
 
     // Add this near the top of the component with other event handlers
     const handleContextMenu = useCallback((e, machineName) => {
@@ -898,7 +921,7 @@ export const LayoutGrid = ({
 
     const handleMachineHover = useCallback((machine, isHovering) => {
       if (isHovering && !selectedElement) {
-        const machineCables = getMachineCables(machine.name, cables);
+        const machineCables = getMachineCables(machine.name, cables, machines[machine.name]);
         const cablesWithRoutes = machineCables.map(cable => {
           const section = backendSections.find(section => {
             return Array.isArray(section.cables) 
@@ -922,7 +945,7 @@ export const LayoutGrid = ({
       } else if (!selectedElement) {
         setHoveredElement(null);
       }
-    }, [cables, backendSections, selectedElement]);
+    }, [cables, backendSections, selectedElement, machines]);
 
     // Main render
     return (
