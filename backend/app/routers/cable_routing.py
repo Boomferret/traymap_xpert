@@ -4,6 +4,7 @@ from typing import List, Dict, Optional, Set, Tuple
 from dataclasses import dataclass
 import itertools
 from heapq import heappush, heappop
+from collections import deque
 
 router = APIRouter()
 
@@ -69,7 +70,6 @@ class DebugInfo(BaseModel):
     num_components_tried: int
     num_components_used: int
     passes_used: int
-    # Could add more fields if desired
 
 class RoutingResponse(BaseModel):
     sections: List[Section] = []
@@ -94,17 +94,6 @@ class PathPoint:
     def __hash__(self):
         return hash((self.x, self.y))
 
-    # For tie-breaking in heaps
-    def __lt__(self, other):
-        if not isinstance(other, PathPoint):
-            return NotImplemented
-        return (self.x, self.y) < (other.x, other.y)
-
-    # So you could do tuple unpacking if needed
-    def __iter__(self):
-        yield self.x
-        yield self.y
-
 @dataclass
 class FullComponent:
     terminals: List[PathPoint]
@@ -114,355 +103,396 @@ class FullComponent:
 
 # ----------------- HELPER FUNCTIONS -----------------
 
-def manhattan_distance(a: PathPoint, b: PathPoint) -> int:
-    """Calculate Manhattan distance."""
-    return abs(a.x - b.x) + abs(a.y - b.y)
-
-def create_rectilinear_path(start: PathPoint, end: PathPoint) -> List[PathPoint]:
+def build_walkable_graph(width: int, height: int, walls: Set[PathPoint]) -> Dict[PathPoint, List[PathPoint]]:
     """
-    Return a short L-shaped path (choose horizontal-first or vertical-first based on which is shorter).
+    Build adjacency for each grid cell that is not a wall.
+    4-direction adjacency.
     """
-    if start == end:
-        return [start]
-    path1 = [start, PathPoint(end.x, start.y), end]
-    dist1 = sum(manhattan_distance(path1[i], path1[i+1]) for i in range(len(path1) - 1))
+    graph = {}
+    for x in range(width):
+        for y in range(height):
+            p = PathPoint(x, y)
+            if p in walls:
+                continue
+            neighbors = []
+            for nx, ny in [(x-1, y), (x+1, y), (x, y-1), (x, y+1)]:
+                if 0 <= nx < width and 0 <= ny < height:
+                    np = PathPoint(nx, ny)
+                    if np not in walls:
+                        neighbors.append(np)
+            graph[p] = neighbors
+    return graph
 
-    path2 = [start, PathPoint(start.x, end.y), end]
-    dist2 = sum(manhattan_distance(path2[i], path2[i+1]) for i in range(len(path2) - 1))
-
-    return path1 if dist1 <= dist2 else path2
-
-def find_mst(terminals: List[PathPoint]) -> List[Tuple[PathPoint, PathPoint]]:
+def bfs_path(start: PathPoint, end: PathPoint, graph: Dict[PathPoint, List[PathPoint]]) -> Optional[List[PathPoint]]:
     """
-    Basic Prim's MST using Manhattan distance in a complete graph.
+    BFS to find a path from start to end in the 'graph'.
+    """
+    if start not in graph or end not in graph:
+        return None
+    queue = deque([start])
+    came_from = {start: None}
+
+    while queue:
+        current = queue.popleft()
+        if current == end:
+            path = []
+            while current is not None:
+                path.append(current)
+                current = came_from[current]
+            path.reverse()
+            return path
+        for nbr in graph[current]:
+            if nbr not in came_from:
+                came_from[nbr] = current
+                queue.append(nbr)
+    return None
+
+def path_distance(path: List[PathPoint]) -> int:
+    """Number of edges in a BFS path => len(path)-1."""
+    return max(0, len(path) - 1)
+
+# ----------------- PAIRWISE ROUTES + MST -----------------
+
+def precompute_machine_pairs(terminals: List[PathPoint],
+                             full_graph: Dict[PathPoint, List[PathPoint]]
+                            ) -> Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]:
+    """
+    For each pair of terminal machines, run BFS.
+    Store (distance, path) if found.
+    """
+    pair_routes = {}
+    n = len(terminals)
+    for i in range(n):
+        for j in range(i+1, n):
+            pA = terminals[i]
+            pB = terminals[j]
+            route = bfs_path(pA, pB, full_graph)
+            if route:
+                dist = path_distance(route)
+                pair_routes[(pA, pB)] = (dist, route)
+                pair_routes[(pB, pA)] = (dist, list(reversed(route)))
+    return pair_routes
+
+def find_wall_aware_mst(terminals: List[PathPoint],
+                        pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+                       ) -> List[Tuple[PathPoint, PathPoint]]:
+    """
+    Prim's MST on valid BFS edges from pair_routes.
     """
     if not terminals:
         return []
-    
-    in_mst = set()
+
+    visited = set()
     mst_edges = []
-    in_mst.add(terminals[0])
+    visited.add(terminals[0])
     heap = []
     counter = itertools.count()
 
-    for v in terminals[1:]:
-        dist = manhattan_distance(terminals[0], v)
-        heappush(heap, (dist, next(counter), terminals[0], v))
+    # Initialize edges from the first terminal
+    for t in terminals[1:]:
+        if (terminals[0], t) in pair_routes:
+            dist = pair_routes[(terminals[0], t)][0]
+            heappush(heap, (dist, next(counter), terminals[0], t))
 
-    while len(in_mst) < len(terminals) and heap:
-        dist, _, u, w = heappop(heap)
-        if w in in_mst:
+    while len(visited) < len(terminals) and heap:
+        dist, _, u, v = heappop(heap)
+        if v in visited:
             continue
-        in_mst.add(w)
-        mst_edges.append((u, w))
-        # Add edges from w to all outside the MST
-        for x in terminals:
-            if x not in in_mst:
-                cost = manhattan_distance(w, x)
-                heappush(heap, (cost, next(counter), w, x))
+        visited.add(v)
+        mst_edges.append((u, v))
+        for w in terminals:
+            if w not in visited:
+                if (v, w) in pair_routes:
+                    dw = pair_routes[(v, w)][0]
+                    heappush(heap, (dw, next(counter), v, w))
 
     return mst_edges
 
-def find_minimum_tree(points: Set[PathPoint],
-                      connections: List[Tuple[PathPoint, PathPoint]]) -> List[Tuple[PathPoint, PathPoint]]:
+def mst_total_length(mst_edges: List[Tuple[PathPoint, PathPoint]],
+                     pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]) -> int:
+    """Sum BFS-based distances for these edges."""
+    total = 0
+    for (u, v) in mst_edges:
+        dist, _ = pair_routes.get((u, v), (0, []))
+        total += dist
+    return total
+
+# ----------------- GENERATE STEINER COMPONENTS -----------------
+
+def mst_sub_length_in_group(
+    group: Set[PathPoint],
+    mst_edges: List[Tuple[PathPoint, PathPoint]],
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+) -> int:
     """
-    Another Prim's MST, but we only use edges in 'connections' to define adjacency.
-    Weight = Manhattan distance.
+    Sum BFS distances for edges entirely within 'group'.
     """
-    graph = {p: {} for p in points}
-    for (u, v) in connections:
-        dist = manhattan_distance(u, v)
-        if v not in graph[u] or dist < graph[u][v]:
-            graph[u][v] = dist
-        if u not in graph[v] or dist < graph[v][u]:
-            graph[v][u] = dist
+    sub_len = 0
+    for (a, b) in mst_edges:
+        if a in group and b in group:
+            sub_len += pair_routes[(a, b)][0]
+    return sub_len
 
-    if not points:
-        return []
-    
-    used = set()
-    mst = []
-    start = next(iter(points))
-    used.add(start)
-    heap = []
-    counter = itertools.count()
-
-    for adj, dist in graph[start].items():
-        heappush(heap, (dist, next(counter), start, adj))
-
-    while len(used) < len(points) and heap:
-        dist, _, u, w = heappop(heap)
-        if w in used:
-            continue
-        used.add(w)
-        mst.append((u, w))
-        for nxt, ndist in graph[w].items():
-            if nxt not in used:
-                heappush(heap, (ndist, next(counter), w, nxt))
-
-    return mst
-
-def find_optimal_steiner_point(p1: PathPoint, p2: PathPoint, p3: PathPoint) -> PathPoint:
-    """Median-based Steiner point for rectilinear metric."""
-    xs = sorted([p1.x, p2.x, p3.x])
-    ys = sorted([p1.y, p2.y, p3.y])
-    return PathPoint(xs[1], ys[1])
-
-def is_path_blocked(start: PathPoint, end: PathPoint, walls: Set[PathPoint]) -> bool:
+def generate_3term_components(terminals, mst_edges, pair_routes, full_graph) -> List[FullComponent]:
     """
-    Check if BOTH possible L-routes (horizontal->vertical or vertical->horizontal) are blocked.
-    """
-    route1_blocked = any(PathPoint(x, start.y) in walls
-                         for x in range(min(start.x, end.x), max(start.x, end.x)+1)) \
-                     or any(PathPoint(end.x, y) in walls
-                            for y in range(min(start.y, end.y), max(start.y, end.y)+1))
-
-    route2_blocked = any(PathPoint(start.x, y) in walls
-                         for y in range(min(start.y, end.y), max(start.y, end.y)+1)) \
-                     or any(PathPoint(x, end.y) in walls
-                            for x in range(min(start.x, end.x), max(start.x, end.x)+1))
-
-    return route1_blocked and route2_blocked
-
-#
-# --------------------  3-TERM & 4-TERM COMPONENTS  --------------------
-#
-
-def generate_3term_components(terminals: List[PathPoint],
-                              mst_edges: List[Tuple[PathPoint, PathPoint]]
-                             ) -> List[FullComponent]:
-    """
-    For each triple (t1,t2,t3), we create a single Steiner point (median-based),
-    then connect (SP->t1), (SP->t2), (SP->t3).
-    gain = sum of MST edges among t1,t2,t3 - sum of new edges.
+    Similar to previous code: tries a single "median-based" Steiner for each triple.
+    Then BFS-check S->t1, t2, t3. If it reduces cost, keep it.
     """
     comps = []
     n = len(terminals)
+    if n < 3:
+        return comps
+
     for i in range(n-2):
         for j in range(i+1, n-1):
             for k in range(j+1, n):
                 t1, t2, t3 = terminals[i], terminals[j], terminals[k]
-                sp = find_optimal_steiner_point(t1, t2, t3)
-                new_edges = [(sp, t1), (sp, t2), (sp, t3)]
-                
-                # sum MST edges among these 3
-                triple_set = {t1, t2, t3}
-                mst_sub_len = 0
-                for (a, b) in mst_edges:
-                    if a in triple_set and b in triple_set:
-                        mst_sub_len += manhattan_distance(a, b)
+                group_set = {t1, t2, t3}
+                old_len = mst_sub_length_in_group(group_set, mst_edges, pair_routes)
 
-                new_len = sum(manhattan_distance(a, b) for (a, b) in new_edges)
-                gain = mst_sub_len - new_len
+                xs = sorted([t1.x, t2.x, t3.x])
+                ys = sorted([t1.y, t2.y, t3.y])
+                sx, sy = xs[1], ys[1]  # median
+                sp = PathPoint(sx, sy)
+
+                r1 = bfs_path(sp, t1, full_graph)
+                r2 = bfs_path(sp, t2, full_graph)
+                r3 = bfs_path(sp, t3, full_graph)
+                if not (r1 and r2 and r3):
+                    continue
+                new_len = path_distance(r1) + path_distance(r2) + path_distance(r3)
+                gain = old_len - new_len
                 if gain > 0:
+                    conns = [(sp, t1), (sp, t2), (sp, t3)]
                     comps.append(
                         FullComponent(
-                            terminals=[t1, t2, t3],
+                            terminals=[t1,t2,t3],
                             steiner_points=[sp],
-                            connections=new_edges,
+                            connections=conns,
                             gain=gain
                         )
                     )
     return comps
 
-def generate_4term_components_advanced(
-    terminals: List[PathPoint],
-    mst_edges: List[Tuple[PathPoint, PathPoint]]
-) -> List[FullComponent]:
+def generate_4term_components_advanced(terminals, mst_edges, pair_routes, full_graph) -> List[FullComponent]:
     """
-    Generate 4-terminal RSMT "full components" using multiple topologies:
-      1) Pairwise partition (two Steiner points).
-      2) H-topology (one Steiner point).
-      (Potentially more shapes can be added.)
-
-    For each shape, if gain>0, we keep it.
+    Example: tries a simple "pairwise partition" approach for quadruples.
     """
     comps = []
+    n = len(terminals)
+    if n < 4:
+        return comps
 
-    def mst_sub_length(group: Set[PathPoint]) -> int:
-        sub_len = 0
-        for (a, b) in mst_edges:
-            if a in group and b in group:
-                sub_len += manhattan_distance(a, b)
-        return sub_len
-
-    import itertools
     all_quads = list(itertools.combinations(terminals, 4))
-
     for quad in all_quads:
-        t1, t2, t3, t4 = quad
-        group_set = {t1, t2, t3, t4}
-        sub_mst_len = mst_sub_length(group_set)
-
-        # 1) Pairwise partition approach
+        group_set = set(quad)
+        old_len = mst_sub_length_in_group(group_set, mst_edges, pair_routes)
         indices = [0,1,2,3]
-        pts_list = [t1, t2, t3, t4]
+        pts_list = list(quad)
+
         for pair_ij in itertools.combinations(indices, 2):
             pA = pts_list[pair_ij[0]]
             pB = pts_list[pair_ij[1]]
             remain = [p for i,p in enumerate(pts_list) if i not in pair_ij]
+            if len(remain) != 2:
+                continue
             pC, pD = remain[0], remain[1]
 
-            # Steiner points for each pair
-            spA = find_optimal_steiner_point(pA, pB, pB)
-            spB = find_optimal_steiner_point(pC, pD, pD)
+            # naive "L-corner" for pA,pB
+            spA = PathPoint(pA.x, pB.y)
+            # naive "L-corner" for pC,pD
+            spB = PathPoint(pC.x, pD.y)
 
-            edges = [(spA, pA), (spA, pB),
-                     (spB, pC), (spB, pD),
-                     (spA, spB)]
-            new_len = sum(manhattan_distance(u, v) for (u,v) in edges)
-            gain = sub_mst_len - new_len
-            if gain > 0:
-                comps.append(
-                    FullComponent(
-                        terminals=list(group_set),
-                        steiner_points=[spA, spB],
-                        connections=edges,
-                        gain=gain
-                    )
-                )
-
-        # 2) H-topology: pick 2 as "horizontal," 2 as "vertical"
-        for horiz_pair in itertools.combinations(quad, 2):
-            vert_pair = tuple(set(quad) - set(horiz_pair))
-            if len(vert_pair) != 2:
+            rA1 = bfs_path(spA, pA, full_graph)
+            rA2 = bfs_path(spA, pB, full_graph)
+            rB1 = bfs_path(spB, pC, full_graph)
+            rB2 = bfs_path(spB, pD, full_graph)
+            if not (rA1 and rA2 and rB1 and rB2):
                 continue
-            h1, h2 = horiz_pair
-            v1, v2 = vert_pair
+            rAB = bfs_path(spA, spB, full_graph)
+            if not rAB:
+                continue
 
-            # We'll pick the "Steiner point" at the approximate crossing
-            # For rectilinear, we can pick the midpoint in x for (h1,h2),
-            # and midpoint in y for (v1,v2).
-            hx_coords = sorted([h1.x, h2.x])
-            stx = (hx_coords[0] + hx_coords[1]) // 2
-
-            vy_coords = sorted([v1.y, v2.y])
-            sty = (vy_coords[0] + vy_coords[1]) // 2
-
-            S = PathPoint(stx, sty)
-
-            edges = [(S, h1), (S, h2), (S, v1), (S, v2)]
-            new_len = sum(manhattan_distance(u, v) for (u,v) in edges)
-            gain = sub_mst_len - new_len
+            new_len = (path_distance(rA1) + path_distance(rA2)
+                     + path_distance(rB1) + path_distance(rB2)
+                     + path_distance(rAB))
+            gain = old_len - new_len
             if gain > 0:
+                conns = [(spA, pA), (spA, pB), (spB, pC), (spB, pD), (spA, spB)]
                 comps.append(
                     FullComponent(
-                        terminals=list(group_set),
-                        steiner_points=[S],
-                        connections=edges,
+                        terminals=list(quad),
+                        steiner_points=[spA, spB],
+                        connections=conns,
                         gain=gain
                     )
                 )
-
-    comps.sort(key=lambda c: c.gain, reverse=True)
     return comps
 
-def generate_all_components(
-    terminals: List[PathPoint],
-    mst_edges: List[Tuple[PathPoint, PathPoint]]
-) -> List[FullComponent]:
+def generate_all_components(terminals, mst_edges, pair_routes, full_graph) -> List[FullComponent]:
     """
-    Combine:
-      - 3-term components (generate_3term_components)
-      - 4-term advanced components (generate_4term_components_advanced)
-    Sort them all by descending gain.
+    Merge 3-term & 4-term components, filter by gain > 0, sort desc.
     """
-    three_comps = generate_3term_components(terminals, mst_edges)
-    four_comps = generate_4term_components_advanced(terminals, mst_edges)
-    all_comps = three_comps + four_comps
-    all_comps.sort(key=lambda c: c.gain, reverse=True)
-    return all_comps
+    c3 = generate_3term_components(terminals, mst_edges, pair_routes, full_graph)
+    c4 = generate_4term_components_advanced(terminals, mst_edges, pair_routes, full_graph)
+    all_c = c3 + c4
+    filtered = [x for x in all_c if x.gain > 0]
+    filtered.sort(key=lambda c: c.gain, reverse=True)
+    return filtered
 
-#
-# ----------------- MST UPDATE & BFS ROUTING -----------------
-#
+# ----------------- MST UPDATE & ROUTING -----------------
 
-def update_mst_with_components(mst_edges: List[Tuple[PathPoint, PathPoint]],
-                               components: List[FullComponent]) -> List[Tuple[PathPoint, PathPoint]]:
+def update_mst_with_components(
+    mst_edges: List[Tuple[PathPoint, PathPoint]],
+    components: List[FullComponent],
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]],
+    full_graph: Dict[PathPoint, List[PathPoint]]
+) -> List[Tuple[PathPoint, PathPoint]]:
     """
-    Incorporate all chosen Steiner components at once, then re-run MST over all points + edges.
+    Incorporate chosen component edges & possible new Steiner points, then re-run MST.
     """
     points = set()
-    connections = []
-
-    # keep old MST edges
     for (u, v) in mst_edges:
         points.add(u)
         points.add(v)
-        connections.append((u, v))
-
-    # add all chosen Steiner edges
     for comp in components:
         for sp in comp.steiner_points:
             points.add(sp)
         for (u, v) in comp.connections:
-            points.add(u)
-            points.add(v)
-            connections.append((u, v))
+            if (u, v) not in pair_routes:
+                route = bfs_path(u, v, full_graph)
+                if route:
+                    dist = path_distance(route)
+                    pair_routes[(u, v)] = (dist, route)
+                    pair_routes[(v, u)] = (dist, list(reversed(route)))
 
-    new_mst = find_minimum_tree(points, connections)
+    new_points = list(points)
+    new_mst = find_wall_aware_mst(new_points, pair_routes)
     return new_mst
 
-def find_cable_route(src: PathPoint, dst: PathPoint,
-                     edges: List[Tuple[PathPoint, PathPoint]]) -> List[Point]:
+def build_mst_adjacency(mst_edges: List[Tuple[PathPoint, PathPoint]],
+                        pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+                       ) -> Dict[PathPoint, Set[PathPoint]]:
     """
-    BFS in a graph expanded from MST edges. Each MST edge is expanded to L-shaped segments.
+    Create a graph adjacency for all BFS paths used by MST edges.
+    If MST edge (u,v) has path p1->p2->...->pn, link them in both directions.
     """
-    graph = {}
-    for (u, v) in edges:
-        path_uv = create_rectilinear_path(u, v)
+    adjacency = {}
+    for (u, v) in mst_edges:
+        dist_uv, path_uv = pair_routes.get((u, v), (0, []))
         for i in range(len(path_uv)-1):
-            p1, p2 = path_uv[i], path_uv[i+1]
-            graph.setdefault(p1, set()).add(p2)
-            graph.setdefault(p2, set()).add(p1)
+            p1 = path_uv[i]
+            p2 = path_uv[i+1]
+            adjacency.setdefault(p1, set()).add(p2)
+            adjacency.setdefault(p2, set()).add(p1)
+    return adjacency
 
-    visited = set()
-    queue = [(src, [src])]
-    visited.add(src)
+def detect_steiner_points(mst_adjacency: Dict[PathPoint, Set[PathPoint]]) -> Set[PathPoint]:
+    """
+    A 'natural' Steiner point or T-junction is any node with degree >= 3.
+    """
+    result = set()
+    for p, nbrs in mst_adjacency.items():
+        if len(nbrs) >= 3:
+            result.add(p)
+    return result
 
+def split_path_at_steiner_points(path_uv: List[PathPoint],
+                                 steiner_points: Set[PathPoint]
+                                ) -> List[List[PathPoint]]:
+    """
+    Given a BFS path from MST (u-> ... -> v),
+    split it into sub-paths whenever we hit a Steiner point in the interior.
+    Example:
+      path = [A, ..., X, S, Y, ..., B], where S is a steiner point, yields
+      [A, ..., X, S] and [S, Y, ..., B].
+    If there's multiple steiner points, we keep splitting.
+    """
+    segments = []
+    current_segment = []
+    for i, p in enumerate(path_uv):
+        current_segment.append(p)
+        if i < len(path_uv)-1:
+            # if p is a steiner point and not the very last point
+            if p in steiner_points and i != 0:
+                # segment ends here
+                segments.append(current_segment)
+                current_segment = [p]
+        else:
+            # last point => always end the final segment
+            segments.append(current_segment)
+    return segments
+
+def find_cable_route(src: PathPoint, dst: PathPoint,
+                     mst_edges: List[Tuple[PathPoint, PathPoint]],
+                     pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+                    ) -> List[Point]:
+    """
+    Build MST adjacency and BFS from src to dst inside that adjacency.
+    Because each MST edge is a BFS path, we unify them in one big adjacency.
+    """
+    adjacency = build_mst_adjacency(mst_edges, pair_routes)
+
+    # If src or dst is not in adjacency, no route
+    if src not in adjacency or dst not in adjacency:
+        return []
+
+    # BFS on adjacency
+    queue = deque([src])
+    came_from = {src: None}
     while queue:
-        current, path_ = queue.pop(0)
+        current = queue.popleft()
         if current == dst:
-            return [Point(x=p.x, y=p.y) for p in path_]
-        for nxt in graph.get(current, []):
-            if nxt not in visited:
-                visited.add(nxt)
-                queue.append((nxt, path_ + [nxt]))
+            # reconstruct
+            rev_path = []
+            while current is not None:
+                rev_path.append(current)
+                current = came_from[current]
+            rev_path.reverse()
+            return [Point(x=p.x, y=p.y) for p in rev_path]
+        for nbr in adjacency[current]:
+            if nbr not in came_from:
+                came_from[nbr] = current
+                queue.append(nbr)
+    return []
 
-    return []  # no route
+# ----------------- BUILDING SECTIONS -----------------
 
-def convert_to_sections(final_mst: List[Tuple[PathPoint, PathPoint]],
-                        cables: List[Cable],
-                        machines: Dict[str, Machine],
-                        networks: List[Dict]) -> List[Section]:
+def convert_to_sections(
+    final_mst: List[Tuple[PathPoint, PathPoint]],
+    cables: List[Cable],
+    machines: Dict[str, Machine],
+    networks: List[Dict],
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+) -> List[Section]:
     """
-    Convert MST edges to sections, grouping by network. 
+    1) Build MST adjacency.
+    2) Detect steiner points (T-junctions).
+    3) For each MST edge path, we split at steiner points to form sub-segments.
+    4) For each sub-segment, see which cables overlap it => form a Section.
     """
-    print("\n=== Converting Edges to Sections ===")
-    
-    # Helper to calculate segment length
-    def calculate_length(points: List[Point]) -> float:
-        length = 0
-        for i in range(len(points) - 1):
-            dx = abs(points[i + 1].x - points[i].x)
-            dy = abs(points[i + 1].y - points[i].y)
-            length += dx + dy
-        return length * 0.1  # Convert to meters (0.1m per grid unit)
+    # 1) MST adjacency
+    mst_adjacency = build_mst_adjacency(final_mst, pair_routes)
+    # 2) Steiner points
+    steiner_points_set = detect_steiner_points(mst_adjacency)
 
-    # Calculate routes and their lengths first
+    # We'll soon need BFS-based cable routes:
     cable_routes = {}
     cable_lengths = {}
+
+    # Quick BFS route for each cable
+    def calc_length(points: List[Point]) -> float:
+        return (len(points)-1)*0.1 if len(points)>1 else 0.0
+
     for cb in cables:
         cid = cb.cableLabel or f"{cb.source}-{cb.target}"
         spt = PathPoint(machines[cb.source].x, machines[cb.source].y)
         tpt = PathPoint(machines[cb.target].x, machines[cb.target].y)
-        route = find_cable_route(spt, tpt, final_mst)
-        if route:
-            cable_routes[cid] = route
-            # Calculate total length for this route
-            cable_lengths[cid] = calculate_length(route)
+        route = find_cable_route(spt, tpt, final_mst, pair_routes)
+        cable_routes[cid] = route
+        cable_lengths[cid] = calc_length(route)
 
-    # Build network-lookup
+    # Build a network lookup
     network_lookup = {}
     for net in networks:
         for func in net.get("functions", []):
@@ -476,37 +506,37 @@ def convert_to_sections(final_mst: List[Tuple[PathPoint, PathPoint]],
             continue
         grouped.setdefault(net_name, []).append(c)
 
-    def points_form_segment(p1: Point, p2: Point, seg_start: Point, seg_end: Point) -> bool:
-        """Check if p1->p2 is exactly within seg_start->seg_end (horiz or vert)."""
-        if seg_start.x == seg_end.x:  # vertical
-            if p1.x != seg_start.x or p2.x != seg_start.x:
-                return False
-            mn, mx = sorted([seg_start.y, seg_end.y])
-            return (mn <= p1.y <= mx) and (mn <= p2.y <= mx)
-        else:  # horizontal
-            if p1.y != seg_start.y or p2.y != seg_start.y:
-                return False
-            mn, mx = sorted([seg_start.x, seg_end.x])
-            return (mn <= p1.x <= mx) and (mn <= p2.x <= mx)
-
     sections = []
-    for net_name, net_cables in grouped.items():
-        print(f"\nProcessing network: {net_name}")
-        for (u, v) in final_mst:
-            path_uv = create_rectilinear_path(u, v)
-            pyd_points = [Point(x=p.x, y=p.y) for p in path_uv]
 
-            used_cables = set()
-            cable_details = {}
-            for c in net_cables:
-                cid = c.cableLabel or f"{c.source}-{c.target}"
-                route = cable_routes.get(cid)
-                if not route:
+    # 3) For each MST edge, get BFS path & split:
+    for net_name, net_cables in grouped.items():
+        for (u, v) in final_mst:
+            dist_uv, path_uv = pair_routes.get((u,v), (0, []))
+            if not path_uv:
+                continue
+
+            # Split the BFS path at internal Steiner points
+            sub_paths = split_path_at_steiner_points(path_uv, steiner_points_set)
+            # sub_paths is a list of smaller [p1->...->pX] segments
+
+            # 4) For each sub-segment, see if it overlaps with cables in net_cables
+            for seg in sub_paths:
+                pyd_points = [Point(x=p.x, y=p.y) for p in seg]
+                if len(pyd_points) < 2:
                     continue
-                # see if route has pyd_points as a sub-segment
-                for i in range(len(route)-1):
-                    if points_form_segment(route[i], route[i+1],
-                                           pyd_points[0], pyd_points[-1]):
+
+                used_cables = set()
+                cable_details = {}
+
+                # naive intersection check
+                seg_set = {(p.x, p.y) for p in pyd_points}
+                for c in net_cables:
+                    cid = c.cableLabel or f"{c.source}-{c.target}"
+                    route = cable_routes[cid]
+                    route_set = {(rp.x, rp.y) for rp in route}
+                    # If there's an overlap of 2+ points => consider used
+                    inter = seg_set.intersection(route_set)
+                    if len(inter) >= 2:
                         used_cables.add(cid)
                         cable_details[cid] = CableDetail(
                             cableLabel=c.cableLabel,
@@ -518,22 +548,20 @@ def convert_to_sections(final_mst: List[Tuple[PathPoint, PathPoint]],
                             cableFunction=c.cableFunction,
                             network=net_name,
                             cableType=c.cableType,
-                            routeLength=cable_lengths.get(cid, 0),
+                            routeLength=cable_lengths[cid],
                             length=getattr(c, 'length', None)
                         )
-                        break
 
-            if used_cables:
-                sec = Section(
-                    points=pyd_points,
-                    cables=used_cables,
-                    network=net_name,
-                    details=cable_details,
-                    strokeWidth=4 + min(len(used_cables)*0.75, 15)
-                )
-                sections.append(sec)
+                if used_cables:
+                    sec = Section(
+                        points=pyd_points,
+                        cables=used_cables,
+                        network=net_name,
+                        details=cable_details,
+                        strokeWidth=4 + min(len(used_cables)*0.75, 15)
+                    )
+                    sections.append(sec)
 
-    print(f"\nTotal sections: {len(sections)}")
     return sections
 
 def calculate_hanan_grid(all_points: List[PathPoint]) -> Dict[str, List[int]]:
@@ -541,26 +569,19 @@ def calculate_hanan_grid(all_points: List[PathPoint]) -> Dict[str, List[int]]:
     ys = sorted({p.y for p in all_points})
     return {"xCoords": xs, "yCoords": ys}
 
-# ----------------- MAIN ENDPOINT: MULTI-PASS + PER-COMPONENT ITERATION -----------------
+# ----------------- MAIN ENDPOINT -----------------
 
 @router.post("/optimize-paths")
 async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
     """
-    A more advanced multi-pass approach. In each pass:
-      1) Generate all 3-terminal *and* 4-terminal components (with various topologies).
-      2) Iteratively pick the SINGLE best component that yields improvement:
-         - Check overlap, check walls, etc.
-         - Update MST immediately.
-         - Recompute gains and repeat until no single improvement is found.
-      3) If no improvement occurs in a pass, stop.
+    BFS-based approach with multi-pass Steiner + T-junction detection.
     """
     try:
-        print("\n=== Starting Cable Path Optimization with 3-term & 4-term Components ===")
+        print("\n=== Starting BFS-based Cable Path Optimization ===")
         print(f"Grid: {config.width}x{config.height}")
         print(f"Machines: {len(config.machines)}, Cables: {len(config.cables)}")
         print(f"Walls: {len(config.walls)}, Perfs: {len(config.perforations)}")
 
-        # Possibly a parameter you can expose:
         max_passes = 5
 
         # Validate cables
@@ -570,29 +591,35 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             if cb.target not in config.machines:
                 raise HTTPException(422, f"Target machine {cb.target} not found")
 
-        # Walls
+        # Build walls set
         walls = {PathPoint(w.x, w.y) for w in config.walls}
-        # Perforations => remove them from walls
         perfs = {PathPoint(p.x, p.y) for p in config.perforations}
-        walls -= perfs
+        walls -= perfs  # remove perforations from the walls
 
-        # Build terminals
+        # 1) Full BFS graph
+        full_graph = build_walkable_graph(config.width, config.height, walls)
+
+        # 2) Collect terminals
         terminals = []
         for mid, m in config.machines.items():
             pt = PathPoint(m.x, m.y)
             terminals.append(pt)
 
-        # 1) Build initial MST
+        # 3) Precompute BFS routes for all machine pairs
+        pair_routes = precompute_machine_pairs(terminals, full_graph)
+
+        # 4) Initial MST
         print("\n--- PASS 0: Building Initial MST ---")
-        mst_edges = find_mst(terminals)
-        init_length = sum(manhattan_distance(a,b) for (a,b) in mst_edges)
-        print(f"Initial MST length: {init_length}")
+        mst_edges = find_wall_aware_mst(terminals, pair_routes)
+        init_length = mst_total_length(mst_edges, pair_routes)
+        print(f"Initial MST distance: {init_length}")
 
         current_length = init_length
         used_steiner_points = set()
         passes_used = 0
         total_comps_used = 0
 
+        # 5) Multi-pass improvement with 3-term, 4-term components
         for pass_id in range(1, max_passes+1):
             print(f"\n=== PASS {pass_id} ===")
             improved_any = False
@@ -600,35 +627,22 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
             while True:
                 iteration_count += 1
-                print(f"\n  PASS {pass_id}, iteration {iteration_count}: generating 3- & 4-term components...")
+                print(f"  PASS {pass_id}, iteration {iteration_count}: generating 3- & 4-term components...")
 
-                # Generate 3- and 4-term components for the current MST
-                comps = generate_all_components(terminals, mst_edges)
-                print(f"  Found {len(comps)} candidate components with positive gain.")
+                comps = generate_all_components(terminals, mst_edges, pair_routes, full_graph)
+                print(f"  Found {len(comps)} candidate components with gain>0.")
 
                 if not comps:
-                    # no more improvements
-                    print("  No more positive-gain components, stopping this pass.")
+                    print("  No more components, stopping this pass.")
                     break
 
-                # Now pick the SINGLE best component that yields improvement
                 best_improvement = 0.0
                 best_comp = None
                 best_new_mst = None
 
                 for comp in comps:
-                    # Check for walls in each connection
-                    blocked = False
-                    for (u,v) in comp.connections:
-                        if is_path_blocked(u, v, walls):
-                            blocked = True
-                            break
-                    if blocked:
-                        continue
-
-                    # Try updating MST with just this component
-                    new_edges = update_mst_with_components(mst_edges, [comp])
-                    new_len = sum(manhattan_distance(a,b) for (a,b) in new_edges)
+                    new_edges = update_mst_with_components(mst_edges, [comp], pair_routes, full_graph)
+                    new_len = mst_total_length(new_edges, pair_routes)
                     improvement = current_length - new_len
                     if improvement > best_improvement:
                         best_improvement = improvement
@@ -636,56 +650,61 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                         best_new_mst = new_edges
 
                 if best_comp and best_improvement > 0:
-                    print(f"  Accepted a component with gain={best_comp.gain:.2f}, actual improvement={best_improvement:.2f}")
+                    print(f"  Accepted component with gain={best_comp.gain:.2f}, improvement={best_improvement:.2f}")
                     mst_edges = best_new_mst
                     current_length -= best_improvement
                     used_steiner_points.update(best_comp.steiner_points)
                     total_comps_used += 1
                     improved_any = True
                 else:
-                    print("  No single-component improvement found this iteration.")
+                    print("  No single-component improvement found.")
                     break
 
-            # If we didn't improve at all in this pass, we're done
             if improved_any:
-                print(f"Completed PASS {pass_id} with MST length={current_length:.2f}")
+                print(f"Completed PASS {pass_id} with MST distance={current_length}")
                 passes_used = pass_id
             else:
                 print(f"No improvement in PASS {pass_id}, stopping.")
                 break
 
-        # Summarize
         final_len = current_length
         improvement_pct = 0.0
         if init_length > 0:
             improvement_pct = 100*(init_length - final_len)/init_length
 
-        print(f"\nFinal MST length: {final_len}, improvement over initial: {improvement_pct:.2f}%")
+        print(f"\nFinal MST distance: {final_len}, improvement over initial: {improvement_pct:.2f}%")
         print(f"Used Steiner points: {len(used_steiner_points)}, total comps used: {total_comps_used}")
         print(f"Passes used: {passes_used}")
 
-        # Convert MST to sections
-        sections = convert_to_sections(mst_edges, config.cables, config.machines, config.networks)
+        # 6) Convert MST to sections (split around T-junctions), detect "natural" Steiner points
+        sections = convert_to_sections(mst_edges, config.cables, config.machines, config.networks, pair_routes)
 
-        # Build Hanan grid
-        hanan = calculate_hanan_grid(terminals + list(used_steiner_points))
+        # Build adjacency again to detect T-junctions that might not come from explicit 3/4-term comps
+        mst_adjacency = build_mst_adjacency(mst_edges, pair_routes)
+        t_junction_points = detect_steiner_points(mst_adjacency)
 
-        # Cable routes
+        # Combine them with used_steiner_points for final reporting
+        all_steiner = set(used_steiner_points) | t_junction_points
+
+        # 7) Build Hanan grid for debugging
+        hanan = calculate_hanan_grid(terminals + list(all_steiner))
+
+        # 8) Build final cable routes
         cable_routes = {}
         for cb in config.cables:
+            cid = cb.cableLabel or f"{cb.source}-{cb.target}"
             spt = PathPoint(config.machines[cb.source].x, config.machines[cb.source].y)
             tpt = PathPoint(config.machines[cb.target].x, config.machines[cb.target].y)
-            route = find_cable_route(spt, tpt, mst_edges)
-            if route:
-                cable_routes[cb.cableLabel or f"{cb.source}-{cb.target}"] = route
+            final_route = find_cable_route(spt, tpt, mst_edges, pair_routes)
+            cable_routes[cid] = final_route
 
         dbg = DebugInfo(
             initial_mst_length=init_length,
             final_length=final_len,
             improvement_percentage=improvement_pct,
-            num_steiner_points=len(used_steiner_points),
+            num_steiner_points=len(all_steiner),
             num_sections=len(sections),
-            num_components_tried=0,  # Could track how many total comps we built across all passes if desired
+            num_components_tried=0,  # could track more precisely
             num_components_used=total_comps_used,
             passes_used=passes_used
         )
@@ -694,10 +713,10 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             sections=sections,
             cableRoutes=cable_routes,
             hananGrid=hanan,
-            steinerPoints=[{"x": sp.x, "y": sp.y} for sp in used_steiner_points],
+            steinerPoints=[{"x": sp.x, "y": sp.y} for sp in all_steiner],
             debug_info=dbg
         )
-        print("\nSample section details:", sections[0].details if sections else None)
+
         return response
 
     except Exception as ex:
