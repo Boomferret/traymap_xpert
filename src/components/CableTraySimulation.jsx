@@ -655,7 +655,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     return () => {
       simulation.stop();
     };
-  }, [isOpen, cablesWithDiameters, selectedTraySize, svgDimensions, scale]);
+  }, [isOpen, cablesWithDiameters, selectedTraySize, svgDimensions, scale, calculateFillMetrics, getColorForCable]);
 
   // Calculate required modal dimensions including legend and controls
   const getModalDimensions = () => {

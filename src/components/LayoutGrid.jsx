@@ -126,6 +126,9 @@ const MachineLabelComponent = React.memo(({ name, pos, cellSize, svgRef }) => {
   );
 });
 
+// Add display name to the MachineLabelComponent
+MachineLabelComponent.displayName = 'MachineLabelComponent';
+
 // Update the helper function to only show first machine name
 const getMergedMachineName = (name, machine) => {
   // Always return the original machine name for display
@@ -225,7 +228,7 @@ export const LayoutGrid = ({
         setImageUrl(url);
         return () => URL.revokeObjectURL(url);
       }
-    }, [backgroundImage]);
+    }, [backgroundImage, imageUrl]);
 
     // Calculate dimensions
     const width = gridSize.width * cellSize;
@@ -244,7 +247,7 @@ export const LayoutGrid = ({
         gridSize.height - 1
       );
       return { x, y };
-    }, [cellSize, gridSize]);
+    }, [cellSize, gridSize.width, gridSize.height]);
 
     const getCursorStyle = useCallback(() => {
       if (moveMode.active) return 'cursor-crosshair';
@@ -1486,5 +1489,8 @@ LayoutGrid.propTypes = {
     y: PropTypes.number
   }))
 };
+
+// Add display name to the main component
+LayoutGrid.displayName = 'LayoutGrid';
 
 export default LayoutGrid;

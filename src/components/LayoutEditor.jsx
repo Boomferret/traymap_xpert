@@ -124,21 +124,78 @@ export const LayoutEditor = () => {
     const [hoveredCable, setHoveredCable] = useState(null);
     const [hoveredNetwork, setHoveredNetwork] = useState(null);
     const [steinerPoints, setSteinerPoints] = useState([]);
+    const [machineUpdateCounter, setMachineUpdateCounter] = useState(0);
   
-    useEffect(() => {
-      // Only calculate paths when we have at least 2 machines and some cables to route
-      const machineCount = Object.keys(machines).length;
-      const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
-        .filter(cable => machines[cable.source] && machines[cable.target]);
-      
-      if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
-        // Debounce the path calculation to avoid too frequent updates
-        const timer = setTimeout(() => {
-          fetchOptimalPaths();
-        }, 500);
-        return () => clearTimeout(timer);
+    const fetchOptimalPaths = useCallback(async () => {
+      try {
+        setIsLoading(true);
+        // Get all available cables
+        const allCables = importedCables.length > 0 ? importedCables : cables;
+        
+        // Filter cables to only include those where both machines are placed
+        const availableCables = allCables.filter(cable => {
+          const sourceExists = machines.hasOwnProperty(cable.source);
+          const targetExists = machines.hasOwnProperty(cable.target);
+          return sourceExists && targetExists;
+        });
+
+        // Only proceed if we have cables to route
+        if (availableCables.length === 0) {
+          return;
+        }
+
+        const requestData = {
+          width: canvasConfig.width * 10,
+          height: canvasConfig.height * 10,
+          walls,
+          perforations,
+          machines,
+          cables: availableCables.map(cable => ({
+            ...cable,
+            // Ensure cableType is explicitly included
+            cableType: cable.cableType,
+            cableFunction: cable.cableFunction,
+            source: cable.source,
+            target: cable.target,
+            diameter: cable.diameter
+          })),
+          networks: networks.map(network => ({
+            id: network.id,
+            name: network.name,
+            functions: network.functions
+          }))
+        };
+        console.log("Sending data to backend:", requestData);
+
+        const response = await fetch('/api/optimize-paths', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestData)
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        console.log("Received data from backend:", data);
+        console.log("Sample section details:", data.sections[0]?.details);
+        console.log("Sample cable details:", Object.values(data.sections[0]?.details)[0]);
+
+        if (data.sections) {
+          setBackendSections(data.sections);
+          setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
+          setSteinerPoints(data.steinerPoints || []);
+        }
+      } catch (error) {
+        console.error("Error fetching optimal paths:", error);
+        setError(`Error fetching optimal paths: ${error.message}`);
+      } finally {
+        setIsLoading(false);
       }
-    }, [machines, walls, perforations]); // Only recalculate when physical layout changes
+    }, [machines, walls, perforations, cables, importedCables, canvasConfig.width, canvasConfig.height, networks]);
 
     const handleFileUpload = async (e) => {
         const file = e.target.files[0];
@@ -303,6 +360,7 @@ export const LayoutEditor = () => {
           
           setAvailableMachines(prev => prev.filter(m => m.name !== selectedMachine.name));
           setSelectedMachine(null);
+          setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
         }
       }, [walls, machines, selectedMachine]);
     
@@ -327,6 +385,7 @@ export const LayoutEditor = () => {
               }
             };
           });
+          setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
         }
       }, [walls, machines]);
     
@@ -344,6 +403,7 @@ export const LayoutEditor = () => {
           delete newMachines[machineName];
           return newMachines;
         });
+        setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
       }, [machines]);
     
       const handleAddNetwork = () => {
@@ -478,6 +538,7 @@ export const LayoutEditor = () => {
 
         // Remove the source machine from available machines if it was there
         setAvailableMachines(prev => prev.filter(m => m.name !== sourceMachineName));
+        setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
       }, [machines, cables, importedCables, availableMachines]);
 
       const handleCanvasSetup = (config) => {
@@ -490,77 +551,17 @@ export const LayoutEditor = () => {
         setShowInitialSetup(false);
       };
 
-      const fetchOptimalPaths = async () => {
-        try {
-          setIsLoading(true);
-          // Get all available cables
-          const allCables = importedCables.length > 0 ? importedCables : cables;
-          
-          // Filter cables to only include those where both machines are placed
-          const availableCables = allCables.filter(cable => {
-            const sourceExists = machines.hasOwnProperty(cable.source);
-            const targetExists = machines.hasOwnProperty(cable.target);
-            return sourceExists && targetExists;
-          });
-
-          // Only proceed if we have cables to route
-          if (availableCables.length === 0) {
-            return;
-          }
-
-          const requestData = {
-            width: canvasConfig.width * 10,
-            height: canvasConfig.height * 10,
-            walls,
-            perforations,
-            machines,
-            cables: availableCables.map(cable => ({
-              ...cable,
-              // Ensure cableType is explicitly included
-              cableType: cable.cableType,
-              cableFunction: cable.cableFunction,
-              source: cable.source,
-              target: cable.target,
-              diameter: cable.diameter
-            })),
-            networks: networks.map(network => ({
-              id: network.id,
-              name: network.name,
-              functions: network.functions
-            }))
-          };
-
-          console.log("Sending data to backend:", requestData);
-
-          const response = await fetch('/api/optimize-paths', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(requestData)
-          });
-
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
-
-          const data = await response.json();
-          console.log("Received data from backend:", data);
-          console.log("Sample section details:", data.sections[0]?.details);
-          console.log("Sample cable details:", Object.values(data.sections[0]?.details)[0]);
-
-          if (data.sections) {
-            setBackendSections(data.sections);
-            setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
-            setSteinerPoints(data.steinerPoints || []);
-          }
-        } catch (error) {
-          console.error("Error fetching optimal paths:", error);
-          setError(`Error fetching optimal paths: ${error.message}`);
-        } finally {
-          setIsLoading(false);
+      // Add effect to handle path optimization after machine updates
+      useEffect(() => {
+        // Only calculate paths when we have at least 2 machines and some cables to route
+        const machineCount = Object.keys(machines).length;
+        const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
+          .filter(cable => machines[cable.source] && machines[cable.target]);
+        
+        if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
+          fetchOptimalPaths();
         }
-      };
+      }, [machineUpdateCounter]); // Only depend on the update counter
 
       return (
         <div className="flex flex-col h-full gap-4">
