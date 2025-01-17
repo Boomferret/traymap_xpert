@@ -93,6 +93,26 @@ class PathPoint:
 
     def __hash__(self):
         return hash((self.x, self.y))
+    
+    def __lt__(self, other):
+        if not isinstance(other, PathPoint):
+            return NotImplemented
+        return (self.x, self.y) < (other.x, other.y)
+    
+    def __le__(self, other):
+        if not isinstance(other, PathPoint):
+            return NotImplemented
+        return (self.x, self.y) <= (other.x, other.y)
+    
+    def __gt__(self, other):
+        if not isinstance(other, PathPoint):
+            return NotImplemented
+        return (self.x, self.y) > (other.x, other.y)
+    
+    def __ge__(self, other):
+        if not isinstance(other, PathPoint):
+            return NotImplemented
+        return (self.x, self.y) >= (other.x, other.y)
 
 @dataclass
 class FullComponent:
@@ -233,112 +253,182 @@ def mst_sub_length_in_group(
             sub_len += pair_routes[(a, b)][0]
     return sub_len
 
-def generate_3term_components(terminals, mst_edges, pair_routes, full_graph) -> List[FullComponent]:
+def find_promising_terminal_groups(terminals: List[PathPoint], 
+                                 pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]],
+                                 cables: List[Cable],
+                                 machines: Dict[str, Machine],
+                                 max_groups: int = 50) -> List[List[PathPoint]]:
     """
-    Similar to previous code: tries a single "median-based" Steiner for each triple.
-    Then BFS-check S->t1, t2, t3. If it reduces cost, keep it.
+    Find promising groups of 3-4 terminals that are:
+    1. Close to each other (using BFS distances)
+    2. Connected by cables in the same network
+    3. Form potential corner/intersection patterns
     """
-    comps = []
-    n = len(terminals)
-    if n < 3:
-        return comps
+    # Build network groups
+    network_groups = {}
+    for cable in cables:
+        src_pt = PathPoint(machines[cable.source].x, machines[cable.source].y)
+        dst_pt = PathPoint(machines[cable.target].x, machines[cable.target].y)
+        net = cable.network or "default"
+        network_groups.setdefault(net, set()).add(src_pt)
+        network_groups.setdefault(net, set()).add(dst_pt)
 
-    for i in range(n-2):
-        for j in range(i+1, n-1):
-            for k in range(j+1, n):
-                t1, t2, t3 = terminals[i], terminals[j], terminals[k]
-                group_set = {t1, t2, t3}
-                old_len = mst_sub_length_in_group(group_set, mst_edges, pair_routes)
-
-                xs = sorted([t1.x, t2.x, t3.x])
-                ys = sorted([t1.y, t2.y, t3.y])
-                sx, sy = xs[1], ys[1]  # median
-                sp = PathPoint(sx, sy)
-
-                r1 = bfs_path(sp, t1, full_graph)
-                r2 = bfs_path(sp, t2, full_graph)
-                r3 = bfs_path(sp, t3, full_graph)
-                if not (r1 and r2 and r3):
+    promising_groups = []
+    
+    # For each network group
+    for net_terminals in network_groups.values():
+        if len(net_terminals) < 3:
+            continue
+            
+        # Find terminals that form L or T shapes
+        for t1 in net_terminals:
+            nearby = []
+            # Find terminals close to t1
+            for t2 in net_terminals:
+                if t1 == t2:
                     continue
-                new_len = path_distance(r1) + path_distance(r2) + path_distance(r3)
-                gain = old_len - new_len
-                if gain > 0:
-                    conns = [(sp, t1), (sp, t2), (sp, t3)]
-                    comps.append(
-                        FullComponent(
-                            terminals=[t1,t2,t3],
-                            steiner_points=[sp],
-                            connections=conns,
-                            gain=gain
-                        )
-                    )
-    return comps
+                if (t1, t2) in pair_routes:
+                    dist, _ = pair_routes[(t1, t2)]
+                    nearby.append((dist, t2))  # tuple of (distance, point)
+            
+            # Sort by distance only (first element of tuple)
+            nearby.sort(key=lambda x: x[0])  # Sort by distance
+            nearby = nearby[:5]  # Consider only 5 closest neighbors
+            
+            # Look for L-shapes (3 terminals)
+            for _, t2 in nearby:
+                for _, t3 in nearby:
+                    if t2 == t3:
+                        continue
+                    # Check if they form roughly an L-shape
+                    if (abs(t1.x - t2.x) + abs(t2.y - t3.y) < 
+                        abs(t1.x - t3.x) + abs(t2.y - t1.y)):
+                        promising_groups.append([t1, t2, t3])
+                        
+                    # Look for potential T or H shapes (4 terminals)
+                    for _, t4 in nearby:
+                        if t4 in (t1, t2, t3):
+                            continue
+                        # Check for T-shape potential
+                        if (abs(t1.x - t2.x) > abs(t3.x - t4.x) and
+                            abs(t3.y - t4.y) > abs(t1.y - t2.y)):
+                            promising_groups.append([t1, t2, t3, t4])
 
-def generate_4term_components_advanced(terminals, mst_edges, pair_routes, full_graph) -> List[FullComponent]:
+    # Remove duplicates and limit total groups
+    unique_groups = []
+    seen = set()
+    for group in promising_groups:
+        group_key = tuple(sorted((t.x, t.y) for t in group))
+        if group_key not in seen:
+            seen.add(group_key)
+            unique_groups.append(group)
+            if len(unique_groups) >= max_groups:
+                break
+
+    print(f"\nFound {len(unique_groups)} promising terminal groups")
+    return unique_groups
+
+def generate_all_components(
+    terminals: List[PathPoint], 
+    mst_edges: List[Tuple[PathPoint, PathPoint]], 
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]], 
+    full_graph: Dict[PathPoint, List[PathPoint]],
+    cables: List[Cable] = None,
+    machines: Dict[str, Machine] = None
+) -> List[FullComponent]:
     """
-    Example: tries a simple "pairwise partition" approach for quadruples.
+    Instead of trying all combinations, only try promising groups
+    that are likely to form good Steiner components.
     """
     comps = []
-    n = len(terminals)
-    if n < 4:
-        return comps
+    
+    # Get promising groups instead of all combinations
+    if cables and machines:
+        groups = find_promising_terminal_groups(terminals, pair_routes, cables, machines)
+    else:
+        # Fallback to simple combinations if cables/machines not provided
+        groups = []
+        for size in [3, 4]:
+            for group in itertools.combinations(terminals, size):
+                groups.append(list(group))
+    
+    for group in groups:
+        if len(group) == 3:
+            # Try 3-terminal component
+            t1, t2, t3 = group
+            group_set = {t1, t2, t3}
+            old_len = mst_sub_length_in_group(group_set, mst_edges, pair_routes)
 
-    all_quads = list(itertools.combinations(terminals, 4))
-    for quad in all_quads:
-        group_set = set(quad)
-        old_len = mst_sub_length_in_group(group_set, mst_edges, pair_routes)
-        indices = [0,1,2,3]
-        pts_list = list(quad)
+            xs = sorted([t1.x, t2.x, t3.x])
+            ys = sorted([t1.y, t2.y, t3.y])
+            sx, sy = xs[1], ys[1]  # median
+            sp = PathPoint(sx, sy)
 
-        for pair_ij in itertools.combinations(indices, 2):
-            pA = pts_list[pair_ij[0]]
-            pB = pts_list[pair_ij[1]]
-            remain = [p for i,p in enumerate(pts_list) if i not in pair_ij]
-            if len(remain) != 2:
+            r1 = bfs_path(sp, t1, full_graph)
+            r2 = bfs_path(sp, t2, full_graph)
+            r3 = bfs_path(sp, t3, full_graph)
+            if not (r1 and r2 and r3):
                 continue
-            pC, pD = remain[0], remain[1]
-
-            # naive "L-corner" for pA,pB
-            spA = PathPoint(pA.x, pB.y)
-            # naive "L-corner" for pC,pD
-            spB = PathPoint(pC.x, pD.y)
-
-            rA1 = bfs_path(spA, pA, full_graph)
-            rA2 = bfs_path(spA, pB, full_graph)
-            rB1 = bfs_path(spB, pC, full_graph)
-            rB2 = bfs_path(spB, pD, full_graph)
-            if not (rA1 and rA2 and rB1 and rB2):
-                continue
-            rAB = bfs_path(spA, spB, full_graph)
-            if not rAB:
-                continue
-
-            new_len = (path_distance(rA1) + path_distance(rA2)
-                     + path_distance(rB1) + path_distance(rB2)
-                     + path_distance(rAB))
+            new_len = path_distance(r1) + path_distance(r2) + path_distance(r3)
             gain = old_len - new_len
             if gain > 0:
-                conns = [(spA, pA), (spA, pB), (spB, pC), (spB, pD), (spA, spB)]
+                conns = [(sp, t1), (sp, t2), (sp, t3)]
                 comps.append(
                     FullComponent(
-                        terminals=list(quad),
-                        steiner_points=[spA, spB],
+                        terminals=[t1,t2,t3],
+                        steiner_points=[sp],
                         connections=conns,
                         gain=gain
                     )
                 )
-    return comps
+                
+        elif len(group) == 4:
+            # Try 4-terminal component with pairwise partition
+            t1, t2, t3, t4 = group
+            group_set = {t1, t2, t3, t4}
+            old_len = mst_sub_length_in_group(group_set, mst_edges, pair_routes)
+            
+            # Try partitioning based on geometry
+            if abs(t1.x - t2.x) < abs(t1.y - t2.y):
+                pair_groups = [(t1, t2), (t3, t4)]
+            else:
+                pair_groups = [(t1, t3), (t2, t4)]
+                
+            for pairs in [pair_groups, list(reversed(pair_groups))]:
+                (pA, pB), (pC, pD) = pairs  # Unpack the pairs
+                
+                # Create Steiner points at L-corners
+                spA = PathPoint(pA.x, pB.y)  # L-corner for first pair
+                spB = PathPoint(pC.x, pD.y)  # L-corner for second pair
+                
+                rA1 = bfs_path(spA, pA, full_graph)
+                rA2 = bfs_path(spA, pB, full_graph)
+                rB1 = bfs_path(spB, pC, full_graph)
+                rB2 = bfs_path(spB, pD, full_graph)
+                if not (rA1 and rA2 and rB1 and rB2):
+                    continue
+                rAB = bfs_path(spA, spB, full_graph)
+                if not rAB:
+                    continue
 
-def generate_all_components(terminals, mst_edges, pair_routes, full_graph) -> List[FullComponent]:
-    """
-    Merge 3-term & 4-term components, filter by gain > 0, sort desc.
-    """
-    c3 = generate_3term_components(terminals, mst_edges, pair_routes, full_graph)
-    c4 = generate_4term_components_advanced(terminals, mst_edges, pair_routes, full_graph)
-    all_c = c3 + c4
-    filtered = [x for x in all_c if x.gain > 0]
-    filtered.sort(key=lambda c: c.gain, reverse=True)
-    return filtered
+                new_len = (path_distance(rA1) + path_distance(rA2) +
+                          path_distance(rB1) + path_distance(rB2) +
+                          path_distance(rAB))
+                gain = old_len - new_len
+                if gain > 0:
+                    conns = [(spA, pA), (spA, pB), (spB, pC), (spB, pD), (spA, spB)]
+                    comps.append(
+                        FullComponent(
+                            terminals=list(group_set),
+                            steiner_points=[spA, spB],
+                            connections=conns,
+                            gain=gain
+                        )
+                    )
+
+    # Sort by gain as before
+    comps.sort(key=lambda c: c.gain, reverse=True)
+    return comps
 
 # ----------------- MST UPDATE & ROUTING -----------------
 
@@ -629,7 +719,14 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                 iteration_count += 1
                 print(f"  PASS {pass_id}, iteration {iteration_count}: generating 3- & 4-term components...")
 
-                comps = generate_all_components(terminals, mst_edges, pair_routes, full_graph)
+                comps = generate_all_components(
+                    terminals, 
+                    mst_edges, 
+                    pair_routes, 
+                    full_graph,
+                    cables=config.cables,
+                    machines=config.machines
+                )
                 print(f"  Found {len(comps)} candidate components with gain>0.")
 
                 if not comps:

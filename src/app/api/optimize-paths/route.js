@@ -1,37 +1,56 @@
-export async function POST(req) {
-  try {
-    const body = await req.json();
-    console.log('Sending to backend:', JSON.stringify(body, null, 2));
-    
+import { NextResponse } from 'next/server'
+
+export async function POST(request) {
+    const data = await request.json()
+
     try {
-      const response = await fetch('http://localhost:8000/api/optimize-paths', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
+        const controller = new AbortController();
+        // Set a very long timeout (30 minutes)
+        const timeoutId = setTimeout(() => controller.abort(), 1800000);
 
-      const data = await response.json();
-      
-      if (!response.ok) {
-        console.error('Backend error response:', data);
-        return Response.json(data, { status: response.status });
-      }
+        const response = await fetch('http://localhost:8000/api/optimize-paths', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data),
+            signal: controller.signal,
+            // Increase timeouts
+            keepalive: true,
+            timeout: 1800000 // 30 minutes in milliseconds
+        })
 
-      return Response.json(data);
-    } catch (fetchError) {
-      console.error('Error connecting to backend:', fetchError);
-      return Response.json(
-        { error: 'Unable to connect to optimization service. Please ensure the backend server is running.' },
-        { status: 503 }
-      );
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            throw new Error(`Backend responded with status: ${response.status}`)
+        }
+
+        const result = await response.json()
+        return NextResponse.json(result)
+
+    } catch (error) {
+        console.error('Error connecting to backend:', error)
+        return new NextResponse(
+            JSON.stringify({ error: 'Failed to connect to backend service' }), 
+            { 
+                status: 503,
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            }
+        )
     }
-  } catch (error) {
-    console.error('Error in optimize-paths route:', error);
-    return Response.json(
-      { error: error.message || 'Failed to optimize paths' },
-      { status: 500 }
-    );
-  }
+}
+
+// Increase Next.js API route config timeouts
+export const config = {
+    api: {
+        bodyParser: {
+            sizeLimit: '1mb',
+        },
+        responseLimit: '8mb',
+        externalResolver: true,
+    },
+    maxDuration: 1800, // 30 minutes in seconds
 } 
