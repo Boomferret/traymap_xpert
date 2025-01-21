@@ -32,7 +32,8 @@ const generateDistinctShades = (baseColor, numberOfShades) => {
     
     const max = Math.max(r, g, b);
     const min = Math.min(r, g, b);
-    let h, s, l = (max + min) / 2;
+    let h, s;
+    const l = (max + min) / 2;
 
     if (max === min) {
       h = s = 0;
@@ -43,6 +44,7 @@ const generateDistinctShades = (baseColor, numberOfShades) => {
         case r: h = (g - b) / d + (g < b ? 6 : 0); break;
         case g: h = (b - r) / d + 2; break;
         case b: h = (r - g) / d + 4; break;
+        default: h = 0;
       }
       h /= 6;
     }
@@ -84,16 +86,16 @@ const generateDistinctShades = (baseColor, numberOfShades) => {
   };
 
   const [h, s, l] = hex2HSL(baseColor);
-  
+
   // Generate more distinct shades by varying hue, saturation, and lightness
   return Array.from({ length: numberOfShades }, (_, i) => {
     // Allow hue to vary slightly (±15 degrees)
-    const hueOffset = (i - numberOfShades/2) * (30 / numberOfShades);
+    const hueOffset = (i - numberOfShades / 2) * (30 / numberOfShades);
     const newH = (h + hueOffset + 360) % 360;
     
     // Create more dramatic variations in saturation and lightness
-    const newS = Math.min(100, Math.max(40, s + (i - numberOfShades/2) * (60 / numberOfShades)));
-    const newL = Math.min(80, Math.max(30, l + (i - numberOfShades/2) * (50 / numberOfShades)));
+    const newS = Math.min(100, Math.max(40, s + (i - numberOfShades / 2) * (60 / numberOfShades)));
+    const newL = Math.min(80, Math.max(30, l + (i - numberOfShades / 2) * (50 / numberOfShades)));
     
     return HSL2hex(newH, newS, newL);
   });
@@ -110,27 +112,26 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
   const [scale, setScale] = useState(2); // Default scale
 
   // Constants for visualization
-  const MM_TO_PX = 2; // Scale factor to convert mm to pixels
-  const SVG_PADDING = 100; // Padding around the tray
   const MIN_SVG_WIDTH = 800;
   const MIN_SVG_HEIGHT = 400;
+  const SVG_PADDING = 100;
 
   // Function to get color based on network and function
   const getColorForCable = (cable) => {
     if (cable.color) return cable.color;
-    
+
     // Find the network this cable belongs to
     const network = networks.find(n => n.functions.includes(cable.cableFunction || cable.function));
     if (!network) return '#999999';
-    
+
     // Get all functions for this network
     const networkFunctions = network.functions;
     // Find the index of this cable's function in the network's functions
     const functionIndex = networkFunctions.indexOf(cable.cableFunction || cable.function);
-    
+
     // Generate shades based on the network's base color
     const shades = generateDistinctShades(network.color, networkFunctions.length || 1);
-    
+
     // Return the appropriate shade for this function
     return shades[functionIndex] || network.color;
   };
@@ -180,14 +181,13 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     const TARGET_HEIGHT = MIN_SVG_HEIGHT - (SVG_PADDING * 3);
     
     // Calculate scale factors for width and height
-    // Increase the target size by multiplying by 1.5 to make everything bigger
     const widthScale = (TARGET_WIDTH * 1.5) / traySize.width;
     const heightScale = (TARGET_HEIGHT * 1.5) / traySize.height;
     
     // Use the smaller scale to maintain aspect ratio
     const newScale = Math.min(widthScale, heightScale);
     
-    // Set a higher minimum scale (3 instead of 1)
+    // Set a higher minimum scale so it remains visible
     const scale = Math.max(newScale, 3);
     
     const requiredWidth = (traySize.width * scale) + (SVG_PADDING * 2);
@@ -214,13 +214,9 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
   const parseDiameter = (diameterStr) => {
     if (!diameterStr) return null;
     
-    // If it's already a number, return it
     if (typeof diameterStr === 'number') return diameterStr;
     
-    // Convert to string if it's not already
     const str = String(diameterStr);
-    
-    // Remove "mm" and trim whitespace
     const cleaned = str.replace('mm', '').trim();
     // Replace comma with dot for decimal numbers
     const normalized = cleaned.replace(',', '.');
@@ -231,7 +227,6 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
   // Helper function to group cables by label
   const groupCables = (cables) => {
     const groupedMap = new Map();
-    
     cables.forEach(cable => {
       const key = cable.cableLabel;
       if (!groupedMap.has(key)) {
@@ -243,7 +238,6 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
         groupedMap.get(key).count++;
       }
     });
-
     return Array.from(groupedMap.values());
   };
 
@@ -251,22 +245,24 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
   const calculateFillMetrics = (nodes, trayWidth, trayHeight, trayY) => {
     if (nodes.length === 0) return { heightPercent: 0, areaPercent: 0 };
 
-    // Find highest point of any cable (lowest y value since SVG coordinates)
+    // In the SVG coordinate system, smaller y = higher up
+    // We want the difference between the bottom of the tray (trayY+trayHeight*scale)
+    // and the highest cable point (lowest y-value).
     const highestPoint = Math.min(...nodes.map(n => n.y - n.radius));
     const trayBottom = trayY + trayHeight * scale;
     
-    // Calculate used height from the bottom of the tray to the highest cable point
+    // The used height is from trayBottom down to the highestPoint:
     const usedHeight = trayBottom - highestPoint;
-    // Calculate height percentage relative to total tray height
+    // Calculate % relative to total tray height
     const heightPercent = (usedHeight / (trayHeight * scale)) * 100;
 
-    // Calculate total area of cables vs tray area (in mm²)
+    // Compare total cable cross-sectional area to tray area
     const totalCableArea = nodes.reduce((sum, n) => sum + Math.PI * Math.pow((n.diameter / 2), 2), 0);
     const trayArea = trayWidth * trayHeight;
     const areaPercent = (totalCableArea / trayArea) * 100;
 
     return {
-      heightPercent: Math.max(0, Math.min(Math.round(heightPercent), 100)), // Ensure value is between 0 and 100
+      heightPercent: Math.max(0, Math.min(Math.round(heightPercent), 100)),
       areaPercent: Math.min(Math.round(areaPercent), 100)
     };
   };
@@ -280,7 +276,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     }
   }, [isOpen]);
 
-  // Handle diameter prompts
+  // Prompt for diameters if missing
   useEffect(() => {
     if (!isOpen || !cables || hasPrompted) return;
     
@@ -304,7 +300,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
             validDiameter = true;
           } else {
             const numDiameter = parseFloat(diameter);
-            if (!isNaN(numDiameter) && numDiameter > 0 && numDiameter <= 150) { // Max reasonable diameter
+            if (!isNaN(numDiameter) && numDiameter > 0 && numDiameter <= 150) {
               diametersMap.set(cable.cableLabel, numDiameter);
               validDiameter = true;
             } else {
@@ -353,36 +349,38 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
 
   // D3 simulation effect
   useEffect(() => {
-    if (!isOpen || !svgRef.current || !cablesWithDiameters || cablesWithDiameters.length === 0) return;
+    if (!isOpen || !svgRef.current || cablesWithDiameters.length === 0) return;
 
     const { width: SVG_WIDTH, height: SVG_HEIGHT } = svgDimensions;
+    // Position the tray in the lower portion of the SVG
     const trayX = (SVG_WIDTH - selectedTraySize.width * scale) / 2;
-    const trayY = (SVG_HEIGHT - selectedTraySize.height * scale) / 2;
-    
-    // Create nodes for each cable with the new scale
-    const nodes = cablesWithDiameters.flatMap(cable => 
+    const trayY = SVG_HEIGHT - selectedTraySize.height * scale - SVG_PADDING;
+
+    // Build array of node objects
+    const nodes = cablesWithDiameters.flatMap(cable =>
       Array.from({ length: cable.count }, () => ({
         x: trayX + Math.random() * (selectedTraySize.width * scale),
-        y: trayY + Math.random() * 20,
+        y: trayY + Math.random() * 20, // start near the top of the tray
+        vx: 0,
+        vy: 0,
         radius: cable.diameter * scale / 2,
         diameter: cable.diameter,
         label: cable.cableLabel,
         function: cable.cableFunction || cable.function || 'Unknown',
         network: cable.network || 'Unknown',
-        vy: 0
+        delay: 0 // for optional drop delay
       }))
     );
 
-    // Sort nodes by diameter in descending order for better packing
-    nodes.sort((a, b) => b.diameter - a.diameter);
-    nodes.forEach((d, index) => {
-      d.delay = index * 5;
+    // Sort nodes by radius descending to help larger cables settle first
+    nodes.sort((a, b) => b.radius - a.radius);
+
+    // Assign small staggered delays (optional)
+    nodes.forEach((d, i) => {
+      d.delay = i * 5;
     });
 
-    // Create color scale based on unique cable labels
-    const uniqueLabels = [...new Set(nodes.map(d => d.label))].sort();
-
-    // Clear previous SVG content
+    // Clear old SVG
     d3.select(svgRef.current).selectAll("*").remove();
 
     // Create new SVG
@@ -400,32 +398,29 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("stroke", "#333")
       .attr("stroke-width", 2);
 
-    // Add dimension lines
-    const arrowSize = 5;
-    const dimensionOffset = 20;
+    // Dimension lines, arrowheads, etc.
     const dimensionColor = "#666";
+    const dimensionOffset = 20;
 
-    // Create arrow marker definition
     svg.append("defs")
       .append("marker")
       .attr("id", "arrow")
       .attr("viewBox", "0 -5 10 10")
       .attr("refX", 8)
       .attr("refY", 0)
-      .attr("markerWidth", arrowSize)
-      .attr("markerHeight", arrowSize)
+      .attr("markerWidth", 5)
+      .attr("markerHeight", 5)
       .attr("orient", "auto")
       .append("path")
       .attr("d", "M0,-5L10,0L0,5")
       .attr("fill", dimensionColor);
 
-    // Width dimension line
+    // Width dimension
     const widthDimensionGroup = svg.append("g")
       .attr("class", "dimension-line")
       .style("stroke", dimensionColor)
       .style("stroke-width", 1);
 
-    // Horizontal line with arrows
     widthDimensionGroup.append("line")
       .attr("x1", trayX)
       .attr("y1", trayY + selectedTraySize.height * scale + dimensionOffset)
@@ -434,7 +429,6 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("marker-start", "url(#arrow)")
       .attr("marker-end", "url(#arrow)");
 
-    // Vertical extension lines
     widthDimensionGroup.append("line")
       .attr("x1", trayX)
       .attr("y1", trayY + selectedTraySize.height * scale)
@@ -447,7 +441,6 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("x2", trayX + selectedTraySize.width * scale)
       .attr("y2", trayY + selectedTraySize.height * scale + dimensionOffset);
 
-    // Width dimension text
     widthDimensionGroup.append("text")
       .attr("x", trayX + (selectedTraySize.width * scale) / 2)
       .attr("y", trayY + selectedTraySize.height * scale + dimensionOffset - 5)
@@ -456,13 +449,12 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("font-size", "12px")
       .text(`${selectedTraySize.width}mm`);
 
-    // Height dimension line
+    // Height dimension
     const heightDimensionGroup = svg.append("g")
       .attr("class", "dimension-line")
       .style("stroke", dimensionColor)
       .style("stroke-width", 1);
 
-    // Vertical line with arrows
     heightDimensionGroup.append("line")
       .attr("x1", trayX - dimensionOffset)
       .attr("y1", trayY)
@@ -471,7 +463,6 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("marker-start", "url(#arrow)")
       .attr("marker-end", "url(#arrow)");
 
-    // Horizontal extension lines
     heightDimensionGroup.append("line")
       .attr("x1", trayX - dimensionOffset)
       .attr("y1", trayY)
@@ -484,7 +475,6 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("x2", trayX)
       .attr("y2", trayY + selectedTraySize.height * scale);
 
-    // Height dimension text
     heightDimensionGroup.append("text")
       .attr("x", trayX - dimensionOffset - 5)
       .attr("y", trayY + (selectedTraySize.height * scale) / 2)
@@ -494,7 +484,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("transform", `rotate(-90, ${trayX - dimensionOffset - 5}, ${trayY + (selectedTraySize.height * scale) / 2})`)
       .text(`${selectedTraySize.height}mm`);
 
-    // Add measurement axes on right and top sides
+    // Simple measurement axes for reference
     const axisGroup = svg.append("g")
       .attr("class", "measurement-axes")
       .style("stroke", dimensionColor)
@@ -505,14 +495,12 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     const heightTicks = Math.floor(selectedTraySize.height / 25);
     
     for (let i = 0; i <= heightTicks; i++) {
-      const yPos = trayY + selectedTraySize.height * scale - (i * 25 * scale); // Reversed Y position
-      // Draw tick
+      const yPos = trayY + selectedTraySize.height * scale - (i * 25 * scale);
       axisGroup.append("line")
         .attr("x1", rightAxisX)
         .attr("y1", yPos)
         .attr("x2", rightAxisX + 5)
         .attr("y2", yPos);
-      // Add label
       axisGroup.append("text")
         .attr("x", rightAxisX + 8)
         .attr("y", yPos + 4)
@@ -527,13 +515,11 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
     
     for (let i = 0; i <= widthTicks; i++) {
       const xPos = trayX + i * 25 * scale;
-      // Draw tick
       axisGroup.append("line")
         .attr("x1", xPos)
         .attr("y1", topAxisY)
         .attr("x2", xPos)
         .attr("y2", topAxisY - 5);
-      // Add label
       axisGroup.append("text")
         .attr("x", xPos)
         .attr("y", topAxisY - 8)
@@ -543,7 +529,7 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
         .text(`${i * 25}`);
     }
 
-    // Draw fill height indicator line
+    // Fill line to indicate the "top" of the cables
     const fillLine = svg.append("line")
       .attr("x1", trayX)
       .attr("x2", trayX + selectedTraySize.width * scale)
@@ -551,13 +537,13 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .attr("stroke-width", 2)
       .attr("stroke-dasharray", "4");
 
-    // Create circles for cables
+    // Create circles
     const circles = svg.selectAll("circle")
       .data(nodes)
       .enter()
       .append("circle")
       .attr("r", d => d.radius)
-      .attr("fill", d => getColorForCable(d))
+      .attr("fill", d => getColorForCable({ ...d }))
       .attr("stroke", "#2c3e50")
       .attr("stroke-width", 1.5)
       .on("mouseover", (event, d) => {
@@ -583,8 +569,8 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       .call(d3.drag()
         .on("start", (event, d) => {
           if (!event.active) simulation.alphaTarget(0.3).restart();
-          d.fx = d.x;
-          d.fy = d.y;
+          d.fx = event.x;
+          d.fy = event.y;
         })
         .on("drag", (event, d) => {
           d.fx = event.x;
@@ -597,99 +583,98 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
         })
       );
 
-    // Create simulation
+    // Setup simulation
     const simulation = d3.forceSimulation(nodes)
-      .force("collision", d3.forceCollide().radius(d => d.radius * 1.05).strength(1))
-      .alphaDecay(0.01)
-      .alphaMin(0.001);
+      // Add a little friction so they don't glide endlessly
+      .velocityDecay(0.15)
+      // Basic collision
+      .force("collision", d3.forceCollide().radius(d => d.radius * 1.05).strength(1.2))
+      .alphaDecay(0.005)
+      .alphaMin(0.001)
+      .on("tick", ticked);
 
-    // Tick function with gravity
     function ticked() {
-      const gravity = 0.8;
+      const gravity = 0.25;
 
-      nodes.forEach((d) => {
+      nodes.forEach(d => {
+        // Optional delayed drop
         if (d.delay > 0) {
           d.delay -= 1;
         } else {
-          // Apply gravity
-          d.vy = (d.vy || 0) + gravity;
+          d.vy += gravity; // accelerate downward
           d.y += d.vy;
+          d.x += d.vx;
+        }
 
-          // Constrain to tray boundaries
-          const leftWall = trayX + d.radius;
-          const rightWall = trayX + selectedTraySize.width * scale - d.radius;
-          const bottomWall = trayY + selectedTraySize.height * scale - d.radius;
-          const topWall = trayY + d.radius;
+        // Left wall
+        const leftWall = trayX + d.radius;
+        if (d.x < leftWall) {
+          d.x = leftWall;
+          d.vx = 0;
+        }
 
-          // Horizontal constraints with slight damping
-          if (d.x < leftWall) { d.x = leftWall; d.vx = Math.abs(d.vx || 0) * 0.5; }
-          if (d.x > rightWall) { d.x = rightWall; d.vx = -Math.abs(d.vx || 0) * 0.5; }
+        // Right wall
+        const rightWall = trayX + selectedTraySize.width * scale - d.radius;
+        if (d.x > rightWall) {
+          d.x = rightWall;
+          d.vx = 0;
+        }
 
-          // Vertical constraints with bounce
-          if (d.y > bottomWall) {
-            d.y = bottomWall;
-            d.vy = 0;
-          }
-          if (d.y < topWall) {
-            d.y = topWall;
-            d.vy = Math.abs(d.vy) * 0.5; // Bounce with damping
-          }
+        // Top boundary (prevent going above the tray)
+        if (d.y - d.radius < trayY) {
+          d.y = trayY + d.radius;
+          d.vy = 0;
+        }
+
+        // Bottom wall
+        const bottomWall = trayY + selectedTraySize.height * scale - d.radius;
+        if (d.y > bottomWall) {
+          d.y = bottomWall;
+          d.vy = 0;
         }
       });
 
-      // Update circle positions
-      circles.attr("cx", d => d.x).attr("cy", d => d.y);
+      circles
+        .attr("cx", d => d.x)
+        .attr("cy", d => d.y);
 
-      // Update fill metrics and line position
+      // Update fill metrics
       const metrics = calculateFillMetrics(nodes, selectedTraySize.width, selectedTraySize.height, trayY);
       setFillMetrics(metrics);
 
-      // Update fill line position to show highest point
+      // Move fill line to the highest cable point
       const highestPoint = Math.min(...nodes.map(n => n.y - n.radius));
       fillLine.attr("y1", highestPoint).attr("y2", highestPoint);
     }
 
-    simulation.on("tick", ticked);
+    return () => simulation.stop();
+  }, [
+    isOpen,
+    cablesWithDiameters,
+    selectedTraySize,
+    svgDimensions,
+    scale
+  ]);
 
-    // Cleanup
-    return () => {
-      simulation.stop();
-    };
-  }, [isOpen, cablesWithDiameters, selectedTraySize, svgDimensions, scale, calculateFillMetrics, getColorForCable]);
-
-  // Calculate required modal dimensions including legend and controls
+  // Handle modal sizing
   const getModalDimensions = () => {
-    // Default dimensions for server-side rendering
-    const defaultDimensions = {
-      width: 800,
-      height: 600
-    };
-
-    // Only access window if we're in the browser
-    if (typeof window === 'undefined') {
-      return defaultDimensions;
-    }
+    // Default dimensions in case we're SSR
+    const defaultDimensions = { width: 800, height: 600 };
+    if (typeof window === 'undefined') return defaultDimensions;
 
     const modalPadding = 32;
     const controlsHeight = 200;
     const maxWidth = window.innerWidth - modalPadding * 2;
     const maxHeight = window.innerHeight - modalPadding * 2;
-
     return {
       width: Math.min(maxWidth, 1200),
       height: Math.min(maxHeight - controlsHeight, 800)
     };
   };
 
-  // Add state for modal dimensions
   const [modalDimensions, setModalDimensions] = useState(getModalDimensions());
-
-  // Update dimensions when window resizes
   useEffect(() => {
-    const handleResize = () => {
-      setModalDimensions(getModalDimensions());
-    };
-
+    const handleResize = () => setModalDimensions(getModalDimensions());
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -809,4 +794,4 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
       </div>
     </div>
   );
-}; 
+};

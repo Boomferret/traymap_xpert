@@ -223,16 +223,28 @@ export const LayoutGrid = ({
 
     // Handle background image
     useEffect(() => {
-      if (backgroundImage && !imageUrl) {
-        const url = URL.createObjectURL(backgroundImage);
-        setImageUrl(url);
-        return () => URL.revokeObjectURL(url);
+      if (backgroundImage?.url) {
+        setImageUrl(backgroundImage.url);
+        return () => {
+          if (imageUrl) {
+            URL.revokeObjectURL(imageUrl);
+          }
+        };
       }
-    }, [backgroundImage, imageUrl]);
+    }, [backgroundImage]);
 
     // Calculate dimensions
     const width = gridSize.width * cellSize;
     const height = gridSize.height * cellSize;
+
+    // Calculate image scale and position
+    const imageScale = useMemo(() => {
+      if (!backgroundImage?.originalWidth || !backgroundImage?.originalHeight) return 1;
+      
+      const scaleX = width / backgroundImage.originalWidth;
+      const scaleY = height / backgroundImage.originalHeight;
+      return Math.min(scaleX, scaleY);
+    }, [width, height, backgroundImage]);
 
     // Event handlers
     const getGridCoordinates = useCallback((e) => {
@@ -1039,9 +1051,11 @@ export const LayoutGrid = ({
                   <image
                     key="background-image"
                     href={imageUrl}
-                    width={width}
-                    height={height}
-                    preserveAspectRatio="xMidYMid meet"
+                    width={backgroundImage.originalWidth * imageScale}
+                    height={backgroundImage.originalHeight * imageScale}
+                    x={(width - backgroundImage.originalWidth * imageScale) / 2}
+                    y={(height - backgroundImage.originalHeight * imageScale) / 2}
+                    preserveAspectRatio="none"
                     opacity="0.5"
                   />
                 )}

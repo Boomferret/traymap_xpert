@@ -41,7 +41,13 @@ export const InitialSetupModal = ({ isOpen, onClose, onSubmit }) => {
       type: 'image',
       width: Math.round(calibrationData.width * 10) / 10, // Round to nearest 0.1
       height: Math.round(calibrationData.height * 10) / 10,
-      image: image,
+      image: {
+        file: image,
+        url: uploadedImage,
+        originalWidth: calibrationData.originalWidth,
+        originalHeight: calibrationData.originalHeight,
+        metersPerPixel: calibrationData.metersPerPixel
+      },
       gridResolution: 0.1
     });
     onClose();

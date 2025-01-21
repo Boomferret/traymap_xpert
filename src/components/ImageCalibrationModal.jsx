@@ -111,7 +111,9 @@ export const ImageCalibrationModal = ({ isOpen, onClose, imageUrl, onCalibrate }
       imageUrl,
       width: imageWidthMeters,
       height: imageHeightMeters,
-      metersPerPixel
+      metersPerPixel,
+      originalWidth: imageRef.current.width,
+      originalHeight: imageRef.current.height
     });
     onClose();
   };
