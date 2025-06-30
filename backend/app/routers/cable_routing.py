@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import itertools
 from heapq import heappush, heappop
 from collections import deque
+import math
 
 router = APIRouter()
 
@@ -123,10 +124,42 @@ class FullComponent:
 
 # ----------------- HELPER FUNCTIONS -----------------
 
-def build_walkable_graph(width: int, height: int, walls: Set[PathPoint]) -> Dict[PathPoint, List[PathPoint]]:
+def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[PathPoint]) -> float:
     """
-    Build adjacency for each grid cell that is not a wall.
-    4-direction adjacency.
+    Calculate the weight for a cell based on its distance to the nearest wall.
+    Cells closer to walls have lower weights (preferred for routing).
+    """
+    # Base weight for open areas
+    base_weight = 10.0
+    
+    # Find minimum distance to any wall
+    min_dist_to_wall = float('inf')
+    
+    # Check distance to boundary walls
+    min_dist_to_wall = min(min_dist_to_wall, x, y, width - 1 - x, height - 1 - y)
+    
+    # Check distance to internal walls
+    for wall in walls:
+        dist = abs(x - wall.x) + abs(y - wall.y)  # Manhattan distance
+        min_dist_to_wall = min(min_dist_to_wall, dist)
+    
+    # Weight calculation: closer to walls = lower weight
+    # Weight decreases exponentially as we get closer to walls
+    if min_dist_to_wall == 0:
+        return base_weight * 10  # High penalty for being on a wall (shouldn't happen)
+    elif min_dist_to_wall == 1:
+        return base_weight * 0.3  # Very low weight for adjacent to walls
+    elif min_dist_to_wall == 2:
+        return base_weight * 0.5  # Low weight for cells 2 steps from walls
+    elif min_dist_to_wall == 3:
+        return base_weight * 0.7  # Moderate weight
+    else:
+        return base_weight  # Full weight for cells far from walls
+
+def build_weighted_graph(width: int, height: int, walls: Set[PathPoint]) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
+    """
+    Build adjacency with weights. Each neighbor has (neighbor_point, weight) where 
+    weight favors cells closer to walls.
     """
     graph = {}
     for x in range(width):
@@ -139,65 +172,107 @@ def build_walkable_graph(width: int, height: int, walls: Set[PathPoint]) -> Dict
                 if 0 <= nx < width and 0 <= ny < height:
                     np = PathPoint(nx, ny)
                     if np not in walls:
-                        neighbors.append(np)
+                        # Calculate weight for the destination cell
+                        weight = calculate_cell_weight(nx, ny, width, height, walls)
+                        neighbors.append((np, weight))
             graph[p] = neighbors
     return graph
 
-def bfs_path(start: PathPoint, end: PathPoint, graph: Dict[PathPoint, List[PathPoint]]) -> Optional[List[PathPoint]]:
+def dijkstra_path(start: PathPoint, end: PathPoint, 
+                  graph: Dict[PathPoint, List[Tuple[PathPoint, float]]]) -> Optional[Tuple[float, List[PathPoint]]]:
     """
-    BFS to find a path from start to end in the 'graph'.
+    Dijkstra's algorithm to find the lowest-cost path from start to end.
+    Returns (total_cost, path) or None if no path exists.
     """
     if start not in graph or end not in graph:
         return None
-    queue = deque([start])
+    
+    # Priority queue: (cost, counter, current_point)
+    counter = itertools.count()
+    heap = [(0.0, next(counter), start)]
+    distances = {start: 0.0}
     came_from = {start: None}
+    visited = set()
 
-    while queue:
-        current = queue.popleft()
+    while heap:
+        current_cost, _, current = heappop(heap)
+        
+        if current in visited:
+            continue
+            
+        visited.add(current)
+        
         if current == end:
+            # Reconstruct path
             path = []
-            while current is not None:
-                path.append(current)
-                current = came_from[current]
+            node = current
+            while node is not None:
+                path.append(node)
+                node = came_from[node]
             path.reverse()
-            return path
-        for nbr in graph[current]:
-            if nbr not in came_from:
-                came_from[nbr] = current
-                queue.append(nbr)
+            return (current_cost, path)
+        
+        for neighbor, edge_weight in graph[current]:
+            if neighbor in visited:
+                continue
+                
+            new_cost = current_cost + edge_weight
+            
+            if neighbor not in distances or new_cost < distances[neighbor]:
+                distances[neighbor] = new_cost
+                came_from[neighbor] = current
+                heappush(heap, (new_cost, next(counter), neighbor))
+    
     return None
 
 def path_distance(path: List[PathPoint]) -> int:
-    """Number of edges in a BFS path => len(path)-1."""
+    """Number of edges in a path => len(path)-1."""
     return max(0, len(path) - 1)
+
+def weighted_path_cost(path: List[PathPoint], width: int, height: int, walls: Set[PathPoint]) -> float:
+    """Calculate the actual weighted cost of a path."""
+    if len(path) <= 1:
+        return 0.0
+    
+    total_cost = 0.0
+    for i in range(1, len(path)):
+        p = path[i]
+        weight = calculate_cell_weight(p.x, p.y, width, height, walls)
+        total_cost += weight
+    return total_cost
 
 # ----------------- PAIRWISE ROUTES + MST -----------------
 
 def precompute_machine_pairs(terminals: List[PathPoint],
-                             full_graph: Dict[PathPoint, List[PathPoint]]
-                            ) -> Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]:
+                             weighted_graph: Dict[PathPoint, List[Tuple[PathPoint, float]]], 
+                             width: int, height: int, walls: Set[PathPoint]
+                            ) -> Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]:
     """
-    For each pair of terminal machines, run BFS.
-    Store (distance, path) if found.
+    For each pair of terminal machines, run Dijkstra's algorithm.
+    Store (weighted_cost, path) if found.
     """
     pair_routes = {}
     n = len(terminals)
+    print(f"Precomputing routes for {n} terminals with wall-aware weights...")
+    
     for i in range(n):
         for j in range(i+1, n):
             pA = terminals[i]
             pB = terminals[j]
-            route = bfs_path(pA, pB, full_graph)
-            if route:
-                dist = path_distance(route)
-                pair_routes[(pA, pB)] = (dist, route)
-                pair_routes[(pB, pA)] = (dist, list(reversed(route)))
+            result = dijkstra_path(pA, pB, weighted_graph)
+            if result:
+                cost, route = result
+                pair_routes[(pA, pB)] = (cost, route)
+                pair_routes[(pB, pA)] = (cost, list(reversed(route)))
+    
+    print(f"Successfully computed {len(pair_routes)} pairwise routes")
     return pair_routes
 
 def find_wall_aware_mst(terminals: List[PathPoint],
-                        pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+                        pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]
                        ) -> List[Tuple[PathPoint, PathPoint]]:
     """
-    Prim's MST on valid BFS edges from pair_routes.
+    Prim's MST on weighted Dijkstra edges from pair_routes.
     """
     if not terminals:
         return []
@@ -211,11 +286,11 @@ def find_wall_aware_mst(terminals: List[PathPoint],
     # Initialize edges from the first terminal
     for t in terminals[1:]:
         if (terminals[0], t) in pair_routes:
-            dist = pair_routes[(terminals[0], t)][0]
-            heappush(heap, (dist, next(counter), terminals[0], t))
+            cost = pair_routes[(terminals[0], t)][0]
+            heappush(heap, (cost, next(counter), terminals[0], t))
 
     while len(visited) < len(terminals) and heap:
-        dist, _, u, v = heappop(heap)
+        cost, _, u, v = heappop(heap)
         if v in visited:
             continue
         visited.add(v)
@@ -229,12 +304,12 @@ def find_wall_aware_mst(terminals: List[PathPoint],
     return mst_edges
 
 def mst_total_length(mst_edges: List[Tuple[PathPoint, PathPoint]],
-                     pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]) -> int:
-    """Sum BFS-based distances for these edges."""
-    total = 0
+                     pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]) -> float:
+    """Sum weighted costs for these edges."""
+    total = 0.0
     for (u, v) in mst_edges:
-        dist, _ = pair_routes.get((u, v), (0, []))
-        total += dist
+        cost, _ = pair_routes.get((u, v), (0.0, []))
+        total += cost
     return total
 
 # ----------------- GENERATE STEINER COMPONENTS -----------------
@@ -242,25 +317,25 @@ def mst_total_length(mst_edges: List[Tuple[PathPoint, PathPoint]],
 def mst_sub_length_in_group(
     group: Set[PathPoint],
     mst_edges: List[Tuple[PathPoint, PathPoint]],
-    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
-) -> int:
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]
+) -> float:
     """
-    Sum BFS distances for edges entirely within 'group'.
+    Sum weighted costs for edges entirely within 'group'.
     """
-    sub_len = 0
+    sub_len = 0.0
     for (a, b) in mst_edges:
         if a in group and b in group:
             sub_len += pair_routes[(a, b)][0]
     return sub_len
 
 def find_promising_terminal_groups(terminals: List[PathPoint], 
-                                 pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]],
+                                 pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]],
                                  cables: List[Cable],
                                  machines: Dict[str, Machine],
                                  max_groups: int = 50) -> List[List[PathPoint]]:
     """
     Find promising groups of 3-4 terminals that are:
-    1. Close to each other (using BFS distances)
+    1. Close to each other (using Dijkstra distances)
     2. Connected by cables in the same network
     3. Form potential corner/intersection patterns
     """
@@ -331,8 +406,11 @@ def find_promising_terminal_groups(terminals: List[PathPoint],
 def generate_all_components(
     terminals: List[PathPoint], 
     mst_edges: List[Tuple[PathPoint, PathPoint]], 
-    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]], 
-    full_graph: Dict[PathPoint, List[PathPoint]],
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]], 
+    weighted_graph: Dict[PathPoint, List[Tuple[PathPoint, float]]],
+    width: int,
+    height: int,
+    walls: Set[PathPoint],
     cables: List[Cable] = None,
     machines: Dict[str, Machine] = None
 ) -> List[FullComponent]:
@@ -364,12 +442,12 @@ def generate_all_components(
             sx, sy = xs[1], ys[1]  # median
             sp = PathPoint(sx, sy)
 
-            r1 = bfs_path(sp, t1, full_graph)
-            r2 = bfs_path(sp, t2, full_graph)
-            r3 = bfs_path(sp, t3, full_graph)
+            r1 = dijkstra_path(sp, t1, weighted_graph)
+            r2 = dijkstra_path(sp, t2, weighted_graph)
+            r3 = dijkstra_path(sp, t3, weighted_graph)
             if not (r1 and r2 and r3):
                 continue
-            new_len = path_distance(r1) + path_distance(r2) + path_distance(r3)
+            new_len = r1[0] + r2[0] + r3[0]  # Use actual costs from Dijkstra
             gain = old_len - new_len
             if gain > 0:
                 conns = [(sp, t1), (sp, t2), (sp, t3)]
@@ -401,19 +479,17 @@ def generate_all_components(
                 spA = PathPoint(pA.x, pB.y)  # L-corner for first pair
                 spB = PathPoint(pC.x, pD.y)  # L-corner for second pair
                 
-                rA1 = bfs_path(spA, pA, full_graph)
-                rA2 = bfs_path(spA, pB, full_graph)
-                rB1 = bfs_path(spB, pC, full_graph)
-                rB2 = bfs_path(spB, pD, full_graph)
+                rA1 = dijkstra_path(spA, pA, weighted_graph)
+                rA2 = dijkstra_path(spA, pB, weighted_graph)
+                rB1 = dijkstra_path(spB, pC, weighted_graph)
+                rB2 = dijkstra_path(spB, pD, weighted_graph)
                 if not (rA1 and rA2 and rB1 and rB2):
                     continue
-                rAB = bfs_path(spA, spB, full_graph)
+                rAB = dijkstra_path(spA, spB, weighted_graph)
                 if not rAB:
                     continue
 
-                new_len = (path_distance(rA1) + path_distance(rA2) +
-                          path_distance(rB1) + path_distance(rB2) +
-                          path_distance(rAB))
+                new_len = rA1[0] + rA2[0] + rB1[0] + rB2[0] + rAB[0]  # Use actual costs
                 gain = old_len - new_len
                 if gain > 0:
                     conns = [(spA, pA), (spA, pB), (spB, pC), (spB, pD), (spA, spB)]
@@ -435,8 +511,8 @@ def generate_all_components(
 def update_mst_with_components(
     mst_edges: List[Tuple[PathPoint, PathPoint]],
     components: List[FullComponent],
-    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]],
-    full_graph: Dict[PathPoint, List[PathPoint]]
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]],
+    weighted_graph: Dict[PathPoint, List[Tuple[PathPoint, float]]]
 ) -> List[Tuple[PathPoint, PathPoint]]:
     """
     Incorporate chosen component edges & possible new Steiner points, then re-run MST.
@@ -450,26 +526,26 @@ def update_mst_with_components(
             points.add(sp)
         for (u, v) in comp.connections:
             if (u, v) not in pair_routes:
-                route = bfs_path(u, v, full_graph)
-                if route:
-                    dist = path_distance(route)
-                    pair_routes[(u, v)] = (dist, route)
-                    pair_routes[(v, u)] = (dist, list(reversed(route)))
+                result = dijkstra_path(u, v, weighted_graph)
+                if result:
+                    cost, route = result
+                    pair_routes[(u, v)] = (cost, route)
+                    pair_routes[(v, u)] = (cost, list(reversed(route)))
 
     new_points = list(points)
     new_mst = find_wall_aware_mst(new_points, pair_routes)
     return new_mst
 
 def build_mst_adjacency(mst_edges: List[Tuple[PathPoint, PathPoint]],
-                        pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+                        pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]
                        ) -> Dict[PathPoint, Set[PathPoint]]:
     """
-    Create a graph adjacency for all BFS paths used by MST edges.
+    Create a graph adjacency for all Dijkstra paths used by MST edges.
     If MST edge (u,v) has path p1->p2->...->pn, link them in both directions.
     """
     adjacency = {}
     for (u, v) in mst_edges:
-        dist_uv, path_uv = pair_routes.get((u, v), (0, []))
+        dist_uv, path_uv = pair_routes.get((u, v), (0.0, []))
         for i in range(len(path_uv)-1):
             p1 = path_uv[i]
             p2 = path_uv[i+1]
@@ -491,7 +567,7 @@ def split_path_at_steiner_points(path_uv: List[PathPoint],
                                  steiner_points: Set[PathPoint]
                                 ) -> List[List[PathPoint]]:
     """
-    Given a BFS path from MST (u-> ... -> v),
+    Given a Dijkstra path from MST (u-> ... -> v),
     split it into sub-paths whenever we hit a Steiner point in the interior.
     Example:
       path = [A, ..., X, S, Y, ..., B], where S is a steiner point, yields
@@ -515,11 +591,11 @@ def split_path_at_steiner_points(path_uv: List[PathPoint],
 
 def find_cable_route(src: PathPoint, dst: PathPoint,
                      mst_edges: List[Tuple[PathPoint, PathPoint]],
-                     pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+                     pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]
                     ) -> List[Point]:
     """
-    Build MST adjacency and BFS from src to dst inside that adjacency.
-    Because each MST edge is a BFS path, we unify them in one big adjacency.
+    Build MST adjacency and search from src to dst inside that adjacency.
+    Because each MST edge is a Dijkstra path, we unify them in one big adjacency.
     """
     adjacency = build_mst_adjacency(mst_edges, pair_routes)
 
@@ -527,7 +603,7 @@ def find_cable_route(src: PathPoint, dst: PathPoint,
     if src not in adjacency or dst not in adjacency:
         return []
 
-    # BFS on adjacency
+    # BFS on adjacency (unweighted since we're searching in the MST structure)
     queue = deque([src])
     came_from = {src: None}
     while queue:
@@ -553,7 +629,7 @@ def convert_to_sections(
     cables: List[Cable],
     machines: Dict[str, Machine],
     networks: List[Dict],
-    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[int, List[PathPoint]]]
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]
 ) -> List[Section]:
     """
     1) Build MST adjacency.
@@ -566,11 +642,11 @@ def convert_to_sections(
     # 2) Steiner points
     steiner_points_set = detect_steiner_points(mst_adjacency)
 
-    # We'll soon need BFS-based cable routes:
+    # We'll soon need Dijkstra-based cable routes:
     cable_routes = {}
     cable_lengths = {}
 
-    # Quick BFS route for each cable
+    # Quick Dijkstra route for each cable
     def calc_length(points: List[Point]) -> float:
         return (len(points)-1)*0.1 if len(points)>1 else 0.0
 
@@ -598,14 +674,14 @@ def convert_to_sections(
 
     sections = []
 
-    # 3) For each MST edge, get BFS path & split:
+    # 3) For each MST edge, get Dijkstra path & split:
     for net_name, net_cables in grouped.items():
         for (u, v) in final_mst:
-            dist_uv, path_uv = pair_routes.get((u,v), (0, []))
+            dist_uv, path_uv = pair_routes.get((u,v), (0.0, []))
             if not path_uv:
                 continue
 
-            # Split the BFS path at internal Steiner points
+            # Split the Dijkstra path at internal Steiner points
             sub_paths = split_path_at_steiner_points(path_uv, steiner_points_set)
             # sub_paths is a list of smaller [p1->...->pX] segments
 
@@ -664,10 +740,10 @@ def calculate_hanan_grid(all_points: List[PathPoint]) -> Dict[str, List[int]]:
 @router.post("/optimize-paths")
 async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
     """
-    BFS-based approach with multi-pass Steiner + T-junction detection.
+    Dijkstra-based approach with multi-pass Steiner + T-junction detection.
     """
     try:
-        print("\n=== Starting BFS-based Cable Path Optimization ===")
+        print("\n=== Starting Dijkstra-based Cable Path Optimization ===")
         print(f"Grid: {config.width}x{config.height}")
         print(f"Machines: {len(config.machines)}, Cables: {len(config.cables)}")
         print(f"Walls: {len(config.walls)}, Perfs: {len(config.perforations)}")
@@ -686,8 +762,8 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         perfs = {PathPoint(p.x, p.y) for p in config.perforations}
         walls -= perfs  # remove perforations from the walls
 
-        # 1) Full BFS graph
-        full_graph = build_walkable_graph(config.width, config.height, walls)
+        # 1) Full Dijkstra graph
+        weighted_graph = build_weighted_graph(config.width, config.height, walls)
 
         # 2) Collect terminals
         terminals = []
@@ -695,8 +771,8 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             pt = PathPoint(m.x, m.y)
             terminals.append(pt)
 
-        # 3) Precompute BFS routes for all machine pairs
-        pair_routes = precompute_machine_pairs(terminals, full_graph)
+        # 3) Precompute Dijkstra routes for all machine pairs
+        pair_routes = precompute_machine_pairs(terminals, weighted_graph, config.width, config.height, walls)
 
         # 4) Initial MST
         print("\n--- PASS 0: Building Initial MST ---")
@@ -723,7 +799,10 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                     terminals, 
                     mst_edges, 
                     pair_routes, 
-                    full_graph,
+                    weighted_graph,
+                    config.width,
+                    config.height,
+                    walls,
                     cables=config.cables,
                     machines=config.machines
                 )
@@ -738,7 +817,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                 best_new_mst = None
 
                 for comp in comps:
-                    new_edges = update_mst_with_components(mst_edges, [comp], pair_routes, full_graph)
+                    new_edges = update_mst_with_components(mst_edges, [comp], pair_routes, weighted_graph)
                     new_len = mst_total_length(new_edges, pair_routes)
                     improvement = current_length - new_len
                     if improvement > best_improvement:

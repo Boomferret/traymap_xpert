@@ -585,52 +585,64 @@ export const CableTraySimulation = ({ cables, networks, isOpen, onClose }) => {
 
     // Setup simulation
     const simulation = d3.forceSimulation(nodes)
-      // Add a little friction so they don't glide endlessly
-      .velocityDecay(0.15)
-      // Basic collision
-      .force("collision", d3.forceCollide().radius(d => d.radius * 1.05).strength(1.2))
-      .alphaDecay(0.005)
-      .alphaMin(0.001)
+      // Increase friction to reduce glitchy movement
+      .velocityDecay(0.4)
+      // Increase collision strength but keep it reasonable
+      .force("collision", d3.forceCollide().radius(d => d.radius * 1.02).strength(1.0))
+      // Slower alpha decay so simulation runs longer
+      .alphaDecay(0.01)
+      .alphaMin(0.005)
       .on("tick", ticked);
 
     function ticked() {
+      // Reduce gravity for smoother movement
       const gravity = 0.25;
+      // Add damping to reduce oscillations
+      const damping = 0.95;
 
       nodes.forEach(d => {
         // Optional delayed drop
         if (d.delay > 0) {
           d.delay -= 1;
         } else {
-          d.vy += gravity; // accelerate downward
+          // Apply gravity and damping
+          d.vy += gravity;
+          d.vy *= damping;
+          d.vx *= damping;
+          
+          // Update position
           d.y += d.vy;
           d.x += d.vx;
         }
 
+        // Smoother wall collisions with bounce damping
+        const bounceReduction = 0.3;
+        
         // Left wall
         const leftWall = trayX + d.radius;
         if (d.x < leftWall) {
           d.x = leftWall;
-          d.vx = 0;
+          d.vx = Math.abs(d.vx) * bounceReduction; // Small bounce to the right
         }
 
         // Right wall
         const rightWall = trayX + selectedTraySize.width * scale - d.radius;
         if (d.x > rightWall) {
           d.x = rightWall;
-          d.vx = 0;
+          d.vx = -Math.abs(d.vx) * bounceReduction; // Small bounce to the left
         }
 
         // Top boundary (prevent going above the tray)
         if (d.y - d.radius < trayY) {
           d.y = trayY + d.radius;
-          d.vy = 0;
+          d.vy = Math.abs(d.vy) * bounceReduction; // Small bounce downward
         }
 
-        // Bottom wall
+        // Bottom wall with better collision response
         const bottomWall = trayY + selectedTraySize.height * scale - d.radius;
         if (d.y > bottomWall) {
           d.y = bottomWall;
-          d.vy = 0;
+          d.vy = -Math.abs(d.vy) * bounceReduction; // Small bounce upward
         }
       });
 

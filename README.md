@@ -1,9 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# TrayMap Xpert
+
+This project consists of a Next.js frontend and a Python backend.
+
+## Prerequisites
+
+- Node.js (for the frontend)
+- Python 3.x (for the backend)
+- npm, yarn, pnpm, or bun
 
 ## Getting Started
 
-First, run the development server:
+### Backend Setup
 
+1. Navigate to the backend directory:
+```bash
+cd backend
+```
+
+2. Install Python dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Run the backend server:
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+The backend API will be available at [http://localhost:8000](http://localhost:8000).
+
+### Frontend Setup
+
+1. Navigate to the project root (if not already there):
+```bash
+cd ..
+```
+
+2. Install frontend dependencies:
+```bash
+npm install
+# or
+yarn install
+# or
+pnpm install
+# or
+bun install
+```
+
+3. Run the development server:
 ```bash
 npm run dev
 # or
@@ -14,7 +58,9 @@ pnpm dev
 bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The frontend will be available at [http://localhost:3000](http://localhost:3000).
+
+## Development
 
 You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
 
