@@ -124,7 +124,7 @@ class FullComponent:
 
 # ----------------- HELPER FUNCTIONS -----------------
 
-def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[PathPoint]) -> float:
+def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[PathPoint],redCalble:float = 1.0) -> float:
     """
     Calculate the weight for a cell based on its distance to the nearest wall.
     Cells closer to walls have lower weights (preferred for routing).
@@ -145,18 +145,21 @@ def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[Pa
     
     # Weight calculation: closer to walls = lower weight
     # Weight decreases exponentially as we get closer to walls
+    #if the cable is shorther than te route we add a new param to be able to recalcule the weights
     if min_dist_to_wall == 0:
         return base_weight * 10  # High penalty for being on a wall (shouldn't happen)
     elif min_dist_to_wall == 1:
         return base_weight * 0.3  # Very low weight for adjacent to walls
     elif min_dist_to_wall == 2:
-        return base_weight * 0.5  # Low weight for cells 2 steps from walls
+        return base_weight * 0.5 *redCalble # Low weight for cells 2 steps from walls
     elif min_dist_to_wall == 3:
-        return base_weight * 0.7  # Moderate weight
+        if redCalble!= 1.0:
+            redCalble=redCalble/2
+        return base_weight * 0.7 *redCalble # Moderate weight
     else:
         return base_weight  # Full weight for cells far from walls
 
-def build_weighted_graph(width: int, height: int, walls: Set[PathPoint]) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
+def build_weighted_graph(width: int, height: int, walls: Set[PathPoint],redCable:float = 1.0) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
     """
     Build adjacency with weights. Each neighbor has (neighbor_point, weight) where 
     weight favors cells closer to walls.
@@ -173,7 +176,7 @@ def build_weighted_graph(width: int, height: int, walls: Set[PathPoint]) -> Dict
                     np = PathPoint(nx, ny)
                     if np not in walls:
                         # Calculate weight for the destination cell
-                        weight = calculate_cell_weight(nx, ny, width, height, walls)
+                        weight = calculate_cell_weight(nx, ny, width, height, walls,redCable)
                         neighbors.append((np, weight))
             graph[p] = neighbors
     return graph
@@ -873,6 +876,46 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             tpt = PathPoint(config.machines[cb.target].x, config.machines[cb.target].y)
             final_route = find_cable_route(spt, tpt, mst_edges, pair_routes)
             cable_routes[cid] = final_route
+            #TODO recalcular las rutas de cables que su lenght< que el camino 
+            print("AAAAAAAAAAAAAA" + cb.length)
+            if (cb.length!=""):
+                expected_len = float(cb.length.replace("m", ""))
+            else: expected_len=1000000
+            print("BBBBBBBBBBBBBBBBBBB" + str(expected_len))
+
+
+            actual_len = (len(final_route) - 1) * 0.1
+
+            if expected_len and actual_len > expected_len:
+                print(f"[WARN] Cable {cid} tiene ruta de {actual_len:.2f}m (> {expected_len:.2f}m). Recalculando...")
+
+                max_attempts = 5
+                attempt = 0
+                redCable = 0.55
+                new_route = None
+
+                while attempt < max_attempts and redCable > 0.0:
+                    print(f"  ➤ Intento {attempt+1}: recalculando con redCable = {redCable:.2f}")
+                    less_wall_graph = build_weighted_graph(config.width, config.height, walls, redCable=redCable)
+                    result = dijkstra_path(spt, tpt, less_wall_graph)
+
+                    if result:
+                        new_len, new_path = result
+                        if (new_len * 0.1) <= expected_len:
+                            new_route = [Point(x=p.x, y=p.y) for p in new_path]
+                            print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * 0.1:.2f}m")
+                            break  # Ruta aceptable encontrada
+
+                    redCable -= 0.1
+                    attempt += 1
+
+                if new_route:
+                    cable_routes[cid] = new_route
+                else:
+                    print(f"    ✖️ No se encontró ruta más corta tras {attempt} intentos.")
+            
+
+
 
         dbg = DebugInfo(
             initial_mst_length=init_length,
