@@ -312,14 +312,17 @@ export const LayoutEditor = () => {
           setWalls(prevWalls => {
             const newWalls = [...prevWalls];
             points.forEach(point => {
-              const wallExists = prevWalls.some(wall => wall.x === point.x && wall.y === point.y);
-              if (!wallExists) {
-                newWalls.push({ x: point.x, y: point.y });
+              const index = newWalls.findIndex(w => w.x === point.x && w.y === point.y);
+              if (index === -1) {
+                newWalls.push({ x: point.x, y: point.y }); // añadir muro
+              } else {
+                newWalls.splice(index, 1); // eliminar muro
               }
             });
             return newWalls;
           });
         }
+        
 
         return points; // Return points for preview
       }, []);
