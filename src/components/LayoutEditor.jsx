@@ -418,14 +418,14 @@ export const LayoutEditor = () => {
           functions: []
         };
     
-        setNetworks(prev => [...prev, newNetwork]);
+        handleNetworksChange([...networks, newNetwork]);
       };
     
       const handleRemoveNetwork = (networkId) => {
         const network = networks.find(n => n.id === networkId);
         if (network?.isDefault) return; // Prevent removing default networks
     
-        setNetworks(prev => prev.filter(n => n.id !== networkId));
+        handleNetworksChange(networks.filter(n => n.id !== networkId));
       };
     
       const handleNetworkVisibilityChange = (networkId, checked) => {
@@ -443,7 +443,19 @@ export const LayoutEditor = () => {
           }));
         }
       };
-    
+      //revisar
+      const handleNetworksChange = (updatedNetworks) => {
+        setNetworks(updatedNetworks);
+      
+        const machineCount = Object.keys(machines).length;
+        const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
+          .filter(cable => machines[cable.source] && machines[cable.target]);
+      
+        if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
+          fetchOptimalPaths();
+        }
+      };
+      
       const handleFunctionDrop = (networkId, functionName) => {
         setNetworks(prev => prev.map(network => ({
           ...network,
@@ -452,7 +464,16 @@ export const LayoutEditor = () => {
             : network.functions.filter(f => f !== functionName)
         })));
       };
-
+      useEffect(() => {
+        const machineCount = Object.keys(machines).length;
+        const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
+          .filter(cable => machines[cable.source] && machines[cable.target]);
+      
+        if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
+          fetchOptimalPaths();
+        }
+      }, [networks]); // 🔁 cuando cambien las redes
+      
       // Get unique networks and their info
       const networkInfo = useMemo(() => {
         // Create a map of network types to their cable counts
@@ -562,7 +583,9 @@ export const LayoutEditor = () => {
           fetchOptimalPaths();
         }
       }, [machineUpdateCounter]); // Only depend on the update counter
+      
 
+      
       return (
         <div className="flex flex-col h-full gap-4">
           <InitialSetupModal
@@ -828,15 +851,14 @@ export const LayoutEditor = () => {
                       ) : (
                         <Input
                           value={network.name}
-                          onChange={(e) =>
-                            setNetworks(prev =>
-                              prev.map(n =>
-                                n.id === network.id
-                                  ? { ...n, name: e.target.value }
-                                  : n
-                              )
-                            )
-                          }
+                          onChange={(e) => {
+                            const updated = networks.map(n =>
+                              n.id === network.id
+                                ? { ...n, name: e.target.value }
+                                : n
+                            );
+                            handleNetworksChange(updated);
+                          }}
                           className="text-sm font-medium w-40"
                         />
                       )}
