@@ -27,6 +27,13 @@ export const LayoutEditorToolbar = ({ activeMode, onModeChange, machines }) => {
         Add Perforations
       </Button>
       <Button 
+        variant={activeMode === EditorModes.DELETE ? "secondary" : "outline"}
+        onClick={() => onModeChange(EditorModes.DELETE)}
+        disabled={activeMode === EditorModes.DELETE}
+      >
+        Add Perforations
+      </Button>
+      <Button 
         variant={activeMode === EditorModes.MACHINE ? "secondary" : "outline"}
         onClick={() => onModeChange(EditorModes.MACHINE)}
         disabled={activeMode === EditorModes.VIEW}

@@ -174,6 +174,7 @@ export const LayoutGrid = ({
     selectedCable = null,
     onWallAdd,
     onTrayAdd,
+    onDelete,
     onPerforationAdd,
     onMachinePlace,
     onMachineMove,
@@ -291,7 +292,14 @@ export const LayoutGrid = ({
         setDragStart(coords);
         onWallAdd(coords.x, coords.y);
       }
-    }, [activeMode, getGridCoordinates, onWallAdd,onTrayAdd]);
+      if (activeMode === EditorModes.DELETE) {
+        e.preventDefault();
+        const coords = getGridCoordinates(e);
+        setIsDragging(true);
+        setDragStart(coords);
+        onDelete(coords.x, coords.y);
+      }
+    }, [activeMode, getGridCoordinates, onWallAdd,onTrayAdd,onDelete]);
 
     const handleMouseMove = useCallback((e) => {
       const coords = getGridCoordinates(e);
@@ -301,6 +309,10 @@ export const LayoutGrid = ({
           setPreviewWalls(points || []);
         } else if (activeMode === EditorModes.TRAY) {
           const points = onTrayAdd(dragStart.x, dragStart.y, coords.x, coords.y, true);
+          setPreviewWalls(points || []); 
+        }
+        else if (activeMode === EditorModes.DELETE) {
+          const points = onDelete(dragStart.x, dragStart.y, coords.x, coords.y, true);
           setPreviewWalls(points || []); 
         }
       }
@@ -316,6 +328,9 @@ export const LayoutGrid = ({
         }
         if (coords && activeMode === EditorModes.TRAY) {
           onTrayAdd(dragStart.x, dragStart.y, coords.x, coords.y, false);
+        }
+        if (coords && activeMode === EditorModes.DELETE) {
+          onDelete(dragStart.x, dragStart.y, coords.x, coords.y, false);
         }
       }
       setIsDragging(false);
@@ -358,6 +373,10 @@ export const LayoutGrid = ({
             onMachinePlace(coords.x, coords.y);
           }
           break;
+        case EditorModes.DELETE:
+          onDelete(coords.x, coords.y);
+          break;
+
       }
     }, [activeMode, selectedMachine, moveMode, onWallAdd,onTrayAdd, onPerforationAdd, onMachinePlace, onMachineMove, gridSize]);
 
@@ -1510,6 +1529,7 @@ LayoutGrid.propTypes = {
   selectedCable: PropTypes.string,
   onWallAdd: PropTypes.func.isRequired,
   onTrayAdd: PropTypes.func.isRequired,
+  onDelete: PropTypes.func.isRequired,
   onPerforationAdd: PropTypes.func.isRequired,
   onMachinePlace: PropTypes.func.isRequired,
   onMachineMove: PropTypes.func.isRequired,

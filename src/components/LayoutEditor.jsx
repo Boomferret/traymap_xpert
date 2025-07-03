@@ -324,6 +324,50 @@ export const LayoutEditor = () => {
       
         return points;
       }, []);
+
+      const handleRemoveWallsAndTrays = useCallback((startX, startY, endX, endY) => {
+        // Si no hay coordenadas finales, eliminar solo un punto
+        if (endX === undefined || endY === undefined) {
+          setWalls(prevWalls => prevWalls.filter(w => !(w.x === startX && w.y === startY)));
+          setTray(prevTrays => prevTrays.filter(t => !(t.x === startX && t.y === startY)));
+          return;
+        }
+      
+        // Calcular todos los puntos a lo largo de la línea usando Bresenham
+        const points = [];
+        const dx = Math.abs(endX - startX);
+        const dy = Math.abs(endY - startY);
+        const sx = startX < endX ? 1 : -1;
+        const sy = startY < endY ? 1 : -1;
+        let err = dx - dy;
+      
+        let x = startX;
+        let y = startY;
+      
+        while (true) {
+          points.push({ x, y });
+      
+          if (x === endX && y === endY) break;
+      
+          const e2 = 2 * err;
+          if (e2 > -dy) {
+            err -= dy;
+            x += sx;
+          }
+          if (e2 < dx) {
+            err += dx;
+            y += sy;
+          }
+        }
+      
+        // Eliminar todos los puntos calculados de walls y trays
+        setWalls(prevWalls => prevWalls.filter(w => !points.some(p => p.x === w.x && p.y === w.y)));
+        setTray(prevTrays => prevTrays.filter(t => !points.some(p => p.x === t.x && p.y === t.y)));
+      
+        return points; // opcional, para preview o debug
+      }, []);
+
+      
       const handleWallAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
         // If no end coordinates provided, treat as single wall
         if (endX === undefined || endY === undefined) {
@@ -762,6 +806,18 @@ export const LayoutEditor = () => {
             >
               <CircleDot className="h-5 w-5" />
             </Button>
+            <Button
+              variant={editorMode === EditorModes.DELETE ? "secondary" : "outline"}
+              size="icon"
+              onClick={() => {
+                setEditorMode(EditorModes.DELETE);
+                setSelectedMachine(null);
+              }}
+              title="Delete Walls and Trays"
+              className="w-10 h-10"
+            >
+              <CircleDot className="h-5 w-5" />
+            </Button>
           </div>
 
           <div className="text-sm font-medium mb-2">Available Machines</div>
@@ -860,6 +916,7 @@ export const LayoutEditor = () => {
               selectedMachine={selectedMachine}
               onWallAdd={handleWallAdd}
               onTrayAdd={handleTrayAdd}
+              onDelete={handleRemoveWallsAndTrays}
               trays={trays}
               onPerforationAdd={handlePerforationAdd}
               onMachinePlace={handleMachinePlace}
