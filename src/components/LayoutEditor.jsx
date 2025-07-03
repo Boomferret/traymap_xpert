@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Card } from '@/components/ui/card';
 import { EditorModes } from '@/constants/editorModes';
 import { LayoutGrid } from './LayoutGrid';
-import { Square as Wall, CircleDot, Plus, X, GripVertical } from 'lucide-react';
+import { Square as Wall, CircleDot, Plus, X, GripVertical,PowerOff,Wrench,Truck ,Tractor} from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -801,7 +801,7 @@ export const LayoutEditor = () => {
               title="Draw Tray"
               className="w-10 h-10"
             >
-              <Wall className="h-5 w-5" />
+              <Wrench className="h-5 w-5" />
             </Button>
             <Button
               variant={editorMode === EditorModes.PERFORATION ? "secondary" : "outline"}
@@ -825,7 +825,7 @@ export const LayoutEditor = () => {
               title="Delete Walls and Trays"
               className="w-10 h-10"
             >
-              <CircleDot className="h-5 w-5" />
+              <Tractor className="h-5 w-5" />
             </Button>
           </div>
 
