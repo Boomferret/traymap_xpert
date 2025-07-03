@@ -51,17 +51,17 @@ const MAX_NETWORKS = 8;
 const mergeMachines = (machines, cables, machineA, machineB) => {
   // Create new machines object without machineB
   const newMachines = { ...machines };
-  
+
   // Get existing machine data or create default structures
   const machineAData = newMachines[machineA] || { x: 0, y: 0, mergedHistory: { [machineA]: true } };
   const machineBData = newMachines[machineB] || { x: 0, y: 0, mergedHistory: { [machineB]: true } };
-  
+
   // Create or update merged history
   const mergedHistory = {
     ...(machineAData.mergedHistory || { [machineA]: true }),
     ...(machineBData.mergedHistory || { [machineB]: true })
   };
-  
+
   // Update machine A with merged history and description
   newMachines[machineA] = {
     ...machineAData,
@@ -71,7 +71,7 @@ const mergeMachines = (machines, cables, machineA, machineB) => {
       machineBData.description
     ].filter(Boolean).join(' + ')
   };
-  
+
   delete newMachines[machineB];
 
   // Keep original source/target in cables but mark them as merged
@@ -92,682 +92,691 @@ const mergeMachines = (machines, cables, machineA, machineB) => {
 };
 
 export const LayoutEditor = () => {
-    const [showInitialSetup, setShowInitialSetup] = useState(true);
-    const [canvasConfig, setCanvasConfig] = useState({
-      width: 10,
-      height: 10,
-      gridResolution: 0.1
-    });
-    const [editorMode, setEditorMode] = useState(EditorModes.WALL);
-    const [walls, setWalls] = useState([]);
-    const [trays, setTray] = useState([]);
-    const [perforations, setPerforations] = useState([]);
-    const [machines, setMachines] = useState({});
-    const [availableMachines, setAvailableMachines] = useState([]);
-    const [cables, setCables] = useState([]);
-    const [importedCables, setImportedCables] = useState([]);
-    const [networks, setNetworks] = useState(DEFAULT_NETWORKS);
-    const [showCableList, setShowCableList] = useState(false);
-    const [selectedMachine, setSelectedMachine] = useState(null);
-    const [networkVisibility, setNetworkVisibility] = useState(() => {
-      // Initialize all networks as visible
-      return DEFAULT_NETWORKS.reduce((acc, network) => {
-        acc[network.name] = true;
-        return acc;
-      }, {});
-    });
-    const [inheritMode, setInheritMode] = useState({ active: false, targetMachine: null });
-    const [backendSections, setBackendSections] = useState([]);
-    const [cableRoutes, setCableRoutes] = useState({});
-    const [hananGrid, setHananGrid] = useState({ xCoords: [], yCoords: [] });
-    const [isLoading, setIsLoading] = useState(false);
-    const [error, setError] = useState('');
-    const [hoveredCable, setHoveredCable] = useState(null);
-    const [hoveredNetwork, setHoveredNetwork] = useState(null);
-    const [steinerPoints, setSteinerPoints] = useState([]);
-    const [machineUpdateCounter, setMachineUpdateCounter] = useState(0);
-  
-    const fetchOptimalPaths = useCallback(async () => {
-      try {
-        setIsLoading(true);
-        // Get all available cables
-        const allCables = importedCables.length > 0 ? importedCables : cables;
-        
-        // Filter cables to only include those where both machines are placed
-        const availableCables = allCables.filter(cable => {
-          const sourceExists = machines.hasOwnProperty(cable.source);
-          const targetExists = machines.hasOwnProperty(cable.target);
-          return sourceExists && targetExists;
-        });
+  const [showInitialSetup, setShowInitialSetup] = useState(true);
+  const [canvasConfig, setCanvasConfig] = useState({
+    width: 10,
+    height: 10,
+    gridResolution: 0.1
+  });
+  const [editorMode, setEditorMode] = useState(EditorModes.WALL);
+  const [walls, setWalls] = useState([]);
+  const [trays, setTray] = useState([]);
+  const [perforations, setPerforations] = useState([]);
+  const [machines, setMachines] = useState({});
+  const [availableMachines, setAvailableMachines] = useState([]);
+  const [cables, setCables] = useState([]);
+  const [importedCables, setImportedCables] = useState([]);
+  const [networks, setNetworks] = useState(DEFAULT_NETWORKS);
+  const [showCableList, setShowCableList] = useState(false);
+  const [selectedMachine, setSelectedMachine] = useState(null);
+  const [networkVisibility, setNetworkVisibility] = useState(() => {
+    // Initialize all networks as visible
+    return DEFAULT_NETWORKS.reduce((acc, network) => {
+      acc[network.name] = true;
+      return acc;
+    }, {});
+  });
+  const [inheritMode, setInheritMode] = useState({ active: false, targetMachine: null });
+  const [backendSections, setBackendSections] = useState([]);
+  const [cableRoutes, setCableRoutes] = useState({});
+  const [hananGrid, setHananGrid] = useState({ xCoords: [], yCoords: [] });
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [hoveredCable, setHoveredCable] = useState(null);
+  const [hoveredNetwork, setHoveredNetwork] = useState(null);
+  const [steinerPoints, setSteinerPoints] = useState([]);
+  const [machineUpdateCounter, setMachineUpdateCounter] = useState(0);
+  //uses on the use efect to optimize the number of execution not refresishing when you are dragging
+  const [needsOptimization, setNeedsOptimization] = useState(false);
 
-        // Only proceed if we have cables to route
-        if (availableCables.length === 0) {
-          return;
-        }
+  const markForOptimization = useCallback(() => {
+    setNeedsOptimization(true);
+  }, []);
 
-        const requestData = {
-          width: canvasConfig.width * 10,
-          height: canvasConfig.height * 10,
-          walls,
-          trays,
-          perforations,
-          machines,
-          cables: availableCables.map(cable => ({
-            ...cable,
-            // Ensure cableType is explicitly included
-            cableType: cable.cableType,
-            cableFunction: cable.cableFunction,
-            source: cable.source,
-            target: cable.target,
-            diameter: cable.diameter
-          })),
-          networks: networks.map(network => ({
-            id: network.id,
-            name: network.name,
-            functions: network.functions
-          }))
-        };
-        console.log("Sending data to backend:", requestData);
+  const fetchOptimalPaths = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      // Get all available cables
+      const allCables = importedCables.length > 0 ? importedCables : cables;
 
-        const response = await fetch('/api/optimize-paths', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestData)
-        });
+      // Filter cables to only include those where both machines are placed
+      const availableCables = allCables.filter(cable => {
+        const sourceExists = machines.hasOwnProperty(cable.source);
+        const targetExists = machines.hasOwnProperty(cable.target);
+        return sourceExists && targetExists;
+      });
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        console.log("Received data from backend:", data);
-        console.log("Sample section details:", data.sections[0]?.details);
-        console.log("Sample cable details:", Object.values(data.sections[0]?.details)[0]);
-
-        if (data.sections) {
-          setBackendSections(data.sections);
-          setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
-          setSteinerPoints(data.steinerPoints || []);
-        }
-      } catch (error) {
-        console.error("Error fetching optimal paths:", error);
-        setError(`Error fetching optimal paths: ${error.message}`);
-      } finally {
-        setIsLoading(false);
+      // Only proceed if we have cables to route
+      if (availableCables.length === 0) {
+        return;
       }
-    }, [machines, walls, perforations, cables, importedCables, canvasConfig.width, canvasConfig.height, networks]);
 
-    const handleFileUpload = async (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          const text = await file.text();
-          const cables = text.split('\n').map(line => {
-            const [
-              id, cableLabel, , , , source, , , sourceDevice, , ,
-              sourceLocation, target, , , targetDevice, , ,
-              targetLocation, length, prefabricated, diameter, cableType,
-              orderNumber, manufacturer, erpNumber, internalExternal,
-              suppliedBy, cableFunction, , , remarks
-            ] = line.split(';').map(field => field.replace(/"/g, '').trim());
-    
-            // Normalize machine names by removing '+' prefix
-            const normalizeDeviceName = (name) => {
-              if (!name) return '';
-              return name.replace(/^\+/, '');
-            };
-            const normalizedSourceDevice = normalizeDeviceName(sourceDevice);
-            const normalizedTargetDevice = normalizeDeviceName(targetDevice);
-    
-            // Parse diameter: convert from "X,Ymm" format to number
-            let parsedDiameter = null;
-            if (diameter) {
-              // Remove 'mm' and replace comma with dot
-              const cleanDiameter = diameter.replace('mm', '').replace(',', '.');
-              parsedDiameter = parseFloat(cleanDiameter);
-            }
-    
-            return {
-              id,
-              cableLabel,
-              source: normalizedSourceDevice,
-              sourceLocation,
-              target: normalizedTargetDevice,
-              targetLocation,
-              length,
-              diameter: parsedDiameter,
-              cableType,
-              cableFunction,
-              internalExternal
-            };
-          }).filter(cable => cable.id !== 'ID' && cable.internalExternal !== 'INTERNAL');
-    
-          setImportedCables(cables);
-    
-          // Extract unique machines with normalized names
-          const uniqueMachines = new Set();
-          cables.forEach(cable => {
-            if (cable.source) uniqueMachines.add(cable.source);
-            if (cable.target) uniqueMachines.add(cable.target);
-          });
-    
-          setAvailableMachines(Array.from(uniqueMachines).map(name => ({
-            name,
-            description: cables.find(c => c.source === name)?.sourceLocation ||
-                        cables.find(c => c.target === name)?.targetLocation
-          })));
-    
-          // Reset existing machines and cables
-          setMachines({});
-          setCables([]);
-        }
+      const requestData = {
+        width: canvasConfig.width * 10,
+        height: canvasConfig.height * 10,
+        walls,
+        trays,
+        perforations,
+        machines,
+        cables: availableCables.map(cable => ({
+          ...cable,
+          // Ensure cableType is explicitly included
+          cableType: cable.cableType,
+          cableFunction: cable.cableFunction,
+          source: cable.source,
+          target: cable.target,
+          diameter: cable.diameter
+        })),
+        networks: networks.map(network => ({
+          id: network.id,
+          name: network.name,
+          functions: network.functions
+        }))
       };
+      console.log("Sending data to backend:", requestData);
+
+      const response = await fetch('/api/optimize-paths', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestData)
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log("Received data from backend:", data);
+      console.log("Sample section details:", data.sections[0]?.details);
+      console.log("Sample cable details:", Object.values(data.sections[0]?.details)[0]);
+
+      if (data.sections) {
+        setBackendSections(data.sections);
+        setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
+        setSteinerPoints(data.steinerPoints || []);
+      }
+    } catch (error) {
+      console.error("Error fetching optimal paths:", error);
+      setError(`Error fetching optimal paths: ${error.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [machines, walls, perforations, cables, importedCables, canvasConfig.width, canvasConfig.height, networks]);
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const text = await file.text();
+      const cables = text.split('\n').map(line => {
+        const [
+          id, cableLabel, , , , source, , , sourceDevice, , ,
+          sourceLocation, target, , , targetDevice, , ,
+          targetLocation, length, prefabricated, diameter, cableType,
+          orderNumber, manufacturer, erpNumber, internalExternal,
+          suppliedBy, cableFunction, , , remarks
+        ] = line.split(';').map(field => field.replace(/"/g, '').trim());
+
+        // Normalize machine names by removing '+' prefix
+        const normalizeDeviceName = (name) => {
+          if (!name) return '';
+          return name.replace(/^\+/, '');
+        };
+        const normalizedSourceDevice = normalizeDeviceName(sourceDevice);
+        const normalizedTargetDevice = normalizeDeviceName(targetDevice);
+
+        // Parse diameter: convert from "X,Ymm" format to number
+        let parsedDiameter = null;
+        if (diameter) {
+          // Remove 'mm' and replace comma with dot
+          const cleanDiameter = diameter.replace('mm', '').replace(',', '.');
+          parsedDiameter = parseFloat(cleanDiameter);
+        }
+
+        return {
+          id,
+          cableLabel,
+          source: normalizedSourceDevice,
+          sourceLocation,
+          target: normalizedTargetDevice,
+          targetLocation,
+          length,
+          diameter: parsedDiameter,
+          cableType,
+          cableFunction,
+          internalExternal
+        };
+      }).filter(cable => cable.id !== 'ID' && cable.internalExternal !== 'INTERNAL');
+
+      setImportedCables(cables);
+
+      // Extract unique machines with normalized names
+      const uniqueMachines = new Set();
+      cables.forEach(cable => {
+        if (cable.source) uniqueMachines.add(cable.source);
+        if (cable.target) uniqueMachines.add(cable.target);
+      });
+
+      setAvailableMachines(Array.from(uniqueMachines).map(name => ({
+        name,
+        description: cables.find(c => c.source === name)?.sourceLocation ||
+          cables.find(c => c.target === name)?.targetLocation
+      })));
+
+      // Reset existing machines and cables
+      setMachines({});
+      setCables([]);
+    }
+  };
+
+  const handleMachineSelect = (machine) => {
+    setSelectedMachine(machine);
+    setEditorMode(EditorModes.MACHINE);
+  };
+  const handleTrayAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
+    if (endX === undefined || endY === undefined) {
+      setTray(prevTray => {
+        const exists = prevTray.some(p => p.x === startX && p.y === startY);
+        if (exists) {
+          return prevTray.filter(p => !(p.x === startX && p.y === startY));
+        }
+        return [...prevTray, { x: startX, y: startY }];
+      });
+      markForOptimization(); 
+      return;
+    }
+  
+    const points = [];
+    const dx = Math.abs(endX - startX);
+    const dy = Math.abs(endY - startY);
+    const sx = startX < endX ? 1 : -1;
+    const sy = startY < endY ? 1 : -1;
+    let err = dx - dy;
+  
+    let x = startX;
+    let y = startY;
+  
+    while (true) {
+      points.push({ x, y });
+      if (x === endX && y === endY) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        x += sx;
+      }
+      if (e2 < dx) {
+        err += dx;
+        y += sy;
+      }
+    }
+  
+    if (!isDragging) {
+      setTray(prevTray => {
+        const newTray = [...prevTray];
+        points.forEach(point => {
+          const idx = newTray.findIndex(p => p.x === point.x && p.y === point.y);
+          if (idx === -1) {
+            newTray.push({ x: point.x, y: point.y });
+          } else {
+            newTray.splice(idx, 1);
+          }
+        });
+        return newTray;
+      });
+      markForOptimization(); 
+    }
+  
+    return points;
+  }, [markForOptimization]);
+  
+
+  const handleRemoveWallsAndTrays = useCallback((startX, startY, endX, endY) => {
+    if (endX === undefined || endY === undefined) {
+      setWalls(prevWalls => prevWalls.filter(w => !(w.x === startX && w.y === startY)));
+      setTray(prevTrays => prevTrays.filter(t => !(t.x === startX && t.y === startY)));
+      markForOptimization();  
+      return;
+    }
+  
+    const points = [];
+    const dx = Math.abs(endX - startX);
+    const dy = Math.abs(endY - startY);
+    const sx = startX < endX ? 1 : -1;
+    const sy = startY < endY ? 1 : -1;
+    let err = dx - dy;
+  
+    let x = startX;
+    let y = startY;
+  
+    while (true) {
+      points.push({ x, y });
+      if (x === endX && y === endY) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        x += sx;
+      }
+      if (e2 < dx) {
+        err += dx;
+        y += sy;
+      }
+    }
+  
+    setWalls(prevWalls => prevWalls.filter(w => !points.some(p => p.x === w.x && p.y === w.y)));
+    setTray(prevTrays => prevTrays.filter(t => !points.some(p => p.x === t.x && p.y === t.y)));
     
-      const handleMachineSelect = (machine) => {
-        setSelectedMachine(machine);
-        setEditorMode(EditorModes.MACHINE);
-      };
-      const handleTrayAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
-        // Caso de punto único
-        if (endX === undefined || endY === undefined) {
-          setTray(prevTray => {
-            const exists = prevTray.some(p => p.x === startX && p.y === startY);
-            if (exists) {
-              return prevTray.filter(p => !(p.x === startX && p.y === startY));
-            }
-            return [...prevTray, { x: startX, y: startY }];
-          });
-          return;
-        }
-      
-        // Calcular puntos entre start y end (con Bresenham, como en walls)
-        const points = [];
-        const dx = Math.abs(endX - startX);
-        const dy = Math.abs(endY - startY);
-        const sx = startX < endX ? 1 : -1;
-        const sy = startY < endY ? 1 : -1;
-        let err = dx - dy;
-      
-        let x = startX;
-        let y = startY;
-      
-        while (true) {
-          points.push({ x, y });
-          if (x === endX && y === endY) break;
-          const e2 = 2 * err;
-          if (e2 > -dy) {
-            err -= dy;
-            x += sx;
-          }
-          if (e2 < dx) {
-            err += dx;
-            y += sy;
-          }
-        }
-      
-        // Solo actualiza tray al soltar el mouse (o sea, !isDragging)
-        if (!isDragging) {
-          setTray(prevTray => {
-            const newTray = [...prevTray];
-            points.forEach(point => {
-              const idx = newTray.findIndex(p => p.x === point.x && p.y === point.y);
-              if (idx === -1) {
-                newTray.push({ x: point.x, y: point.y });
-              } else {
-                newTray.splice(idx, 1);
-              }
-            });
-            return newTray;
-          });
-        }
-      
-        return points;
-      }, []);
+    markForOptimization();  
+  
+    return points;
+  }, [markForOptimization]);
+  
 
-      const handleRemoveWallsAndTrays = useCallback((startX, startY, endX, endY) => {
-        // Si no hay coordenadas finales, eliminar solo un punto
-        if (endX === undefined || endY === undefined) {
-          setWalls(prevWalls => prevWalls.filter(w => !(w.x === startX && w.y === startY)));
-          setTray(prevTrays => prevTrays.filter(t => !(t.x === startX && t.y === startY)));
-          return;
+  const handleWallAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
+    if (endX === undefined || endY === undefined) {
+      setWalls(prevWalls => {
+        const wallExists = prevWalls.some(wall => wall.x === startX && wall.y === startY);
+        if (wallExists) {
+          return prevWalls.filter(wall => !(wall.x === startX && wall.y === startY));
         }
-      
-        // Calcular todos los puntos a lo largo de la línea usando Bresenham
-        const points = [];
-        const dx = Math.abs(endX - startX);
-        const dy = Math.abs(endY - startY);
-        const sx = startX < endX ? 1 : -1;
-        const sy = startY < endY ? 1 : -1;
-        let err = dx - dy;
-      
-        let x = startX;
-        let y = startY;
-      
-        while (true) {
-          points.push({ x, y });
-      
-          if (x === endX && y === endY) break;
-      
-          const e2 = 2 * err;
-          if (e2 > -dy) {
-            err -= dy;
-            x += sx;
-          }
-          if (e2 < dx) {
-            err += dx;
-            y += sy;
-          }
-        }
-      
-        // Eliminar todos los puntos calculados de walls y trays
-        setWalls(prevWalls => prevWalls.filter(w => !points.some(p => p.x === w.x && p.y === w.y)));
-        setTray(prevTrays => prevTrays.filter(t => !points.some(p => p.x === t.x && p.y === t.y)));
-      
-        return points; // opcional, para preview o debug
-      }, []);
+        return [...prevWalls, { x: startX, y: startY }];
+      });
 
-      
-      const handleWallAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
-        // If no end coordinates provided, treat as single wall
-        if (endX === undefined || endY === undefined) {
-          setWalls(prevWalls => {
-            const wallExists = prevWalls.some(wall => wall.x === startX && wall.y === startY);
-            if (wallExists) {
-              return prevWalls.filter(wall => !(wall.x === startX && wall.y === startY));
-            }
-            return [...prevWalls, { x: startX, y: startY }];
-          });
-          return;
-        }
-        
-        
+      if (!isDragging) markForOptimization();
+      return;
+    }
         // Calculate all points along the line using Bresenham's line algorithm
-        const points = [];
-        const dx = Math.abs(endX - startX);
-        const dy = Math.abs(endY - startY);
-        const sx = startX < endX ? 1 : -1;
-        const sy = startY < endY ? 1 : -1;
-        let err = dx - dy;
 
-        let x = startX;
-        let y = startY;
+    const points = [];
+    const dx = Math.abs(endX - startX);
+    const dy = Math.abs(endY - startY);
+    const sx = startX < endX ? 1 : -1;
+    const sy = startY < endY ? 1 : -1;
+    let err = dx - dy;
 
-        while (true) {
-          points.push({ x, y });
+    let x = startX;
+    let y = startY;
 
-          if (x === endX && y === endY) break;
+    while (true) {
+      points.push({ x, y });
+      if (x === endX && y === endY) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        x += sx;
+      }
+      if (e2 < dx) {
+        err += dx;
+        y += sy;
+      }
+    }
 
-          const e2 = 2 * err;
-          if (e2 > -dy) {
-            err -= dy;
-            x += sx;
-          }
-          if (e2 < dx) {
-            err += dx;
-            y += sy;
-          }
-        }
-
-        // Only update walls state when not dragging (i.e., on mouse up)
-        if (!isDragging) {
-          setWalls(prevWalls => {
-            const newWalls = [...prevWalls];
-            points.forEach(point => {
-              const index = newWalls.findIndex(w => w.x === point.x && w.y === point.y);
-              if (index === -1) {
-                newWalls.push({ x: point.x, y: point.y }); // añadir muro
-              } else {
-                newWalls.splice(index, 1); // eliminar muro
-              }
-            });
-            return newWalls;
-          });
-        }
-        
-
-        return points; // Return points for preview
-      }, []);
-    
-      const handlePerforationAdd = useCallback((x, y) => {
-        const hasWall = walls.some(wall => wall.x === x && wall.y === y);
-        
-        if (hasWall) {
-          setPerforations(prevPerforations => {
-            const hasPerforation = prevPerforations.some(perf => perf.x === x && perf.y === y);
-            if (hasPerforation) {
-              return prevPerforations.filter(perf => !(perf.x === x && perf.y === y));
-            }
-            return [...prevPerforations, { x, y }];
-          });
-        }
-      }, [walls]);
-    
-      const handleMachinePlace = useCallback((x, y) => {
-        if (!selectedMachine) return;
-    
-        const hasWall = walls.some(wall => wall.x === x && wall.y === y);
-        
-        // Check if there's already a machine at this position
-        const existingMachine = Object.entries(machines).find(([_, pos]) => pos.x === x && pos.y === y);
-        
-        if (!hasWall && !existingMachine) {
-          // Place the machine normally with initial structure
-          setMachines(prevMachines => ({
-            ...prevMachines,
-            [selectedMachine.name]: {
-              x,
-              y,
-              description: selectedMachine.description || '',
-              mergedHistory: { [selectedMachine.name]: true }
-            }
-          }));
-          
-          setAvailableMachines(prev => prev.filter(m => m.name !== selectedMachine.name));
-          setSelectedMachine(null);
-          setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
-        }
-      }, [walls, machines, selectedMachine]);
-    
-      const handleMachineMove = useCallback((machineName, x, y) => {
-        const hasWall = walls.some(wall => wall.x === x && wall.y === y);
-        
-        // Check if there's already a machine at this position
-        const existingMachine = Object.entries(machines).find(([name, pos]) => 
-          name !== machineName && pos.x === x && pos.y === y
-        );
-        
-        if (!hasWall && !existingMachine) {
-          // Move the machine normally while preserving its structure
-          setMachines(prevMachines => {
-            const currentMachine = prevMachines[machineName] || { mergedHistory: { [machineName]: true } };
-            return {
-              ...prevMachines,
-              [machineName]: {
-                ...currentMachine,
-                x,
-                y
-              }
-            };
-          });
-          setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
-        }
-      }, [walls, machines]);
-    
-      const handleMachineRemove = useCallback((machineName) => {
-        // Add the machine back to available machines
-        const machineToAdd = {
-          name: machineName,
-          description: machines[machineName]?.description
-        };
-        setAvailableMachines(prev => [...prev, machineToAdd]);
-
-        // Remove the machine from placed machines
-        setMachines(prev => {
-          const newMachines = { ...prev };
-          delete newMachines[machineName];
-          return newMachines;
-        });
-        setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
-      }, [machines]);
-    
-      const handleAddNetwork = () => {
-        if (networks.length >= MAX_NETWORKS) return;
-    
-        const newNetwork = {
-          id: Date.now().toString(),
-          name: `Network ${networks.length + 1}`,
-          color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
-          isDefault: false,
-          visible: true,
-          functions: []
-        };
-    
-        handleNetworksChange([...networks, newNetwork]);
-      };
-    
-      const handleRemoveNetwork = (networkId) => {
-        const network = networks.find(n => n.id === networkId);
-        if (network?.isDefault) return; // Prevent removing default networks
-    
-        handleNetworksChange(networks.filter(n => n.id !== networkId));
-      };
-    
-      const handleNetworkVisibilityChange = (networkId, checked) => {
-        setNetworks(prev => prev.map(network => 
-          network.id === networkId 
-            ? { ...network, visible: checked }
-            : network
-        ));
-        // Update networkVisibility state as well
-        const network = networks.find(n => n.id === networkId);
-        if (network) {
-          setNetworkVisibility(prev => ({
-            ...prev,
-            [network.name]: checked
-          }));
-        }
-      };
-      //revisar
-      const handleNetworksChange = (updatedNetworks) => {
-        setNetworks(updatedNetworks);
-      
-        const machineCount = Object.keys(machines).length;
-        const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
-          .filter(cable => machines[cable.source] && machines[cable.target]);
-      
-        if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
-          fetchOptimalPaths();
-        }
-      };
-      
-      const handleFunctionDrop = (networkId, functionName) => {
-        setNetworks(prev => prev.map(network => ({
-          ...network,
-          functions: network.id === networkId
-            ? [...new Set([...network.functions, functionName])]
-            : network.functions.filter(f => f !== functionName)
-        })));
-      };
-      useEffect(() => {
-        const machineCount = Object.keys(machines).length;
-        const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
-          .filter(cable => machines[cable.source] && machines[cable.target]);
-      
-        if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
-          fetchOptimalPaths();
-        }
-      }, [networks]); // 🔁 cuando cambien las redes
-      
-      // Get unique networks and their info
-      const networkInfo = useMemo(() => {
-        // Create a map of network types to their cable counts
-        const networkCableCounts = new Map();
-        
-        cables.forEach(cable => {
-          const network = networks.find(n => n.functions.includes(cable.cableFunction));
-          if (network) {
-            const count = networkCableCounts.get(network.name) || 0;
-            networkCableCounts.set(network.name, count + 1);
+    if (!isDragging) {
+      setWalls(prevWalls => {
+        const newWalls = [...prevWalls];
+        points.forEach(point => {
+          const index = newWalls.findIndex(w => w.x === point.x && w.y === point.y);
+          if (index === -1) {
+            newWalls.push({ x: point.x, y: point.y });
+          } else {
+            newWalls.splice(index, 1);
           }
         });
+        return newWalls;
+      });
+      markForOptimization();
+    }
 
-        return networks.map(network => ({
-          type: network.name,
-          color: network.color,
-          cables: new Set(Array(networkCableCounts.get(network.name) || 0).fill(null)),
-          visible: networkVisibility[network.name] !== false
-        }));
-      }, [networks, cables, networkVisibility]);
+    return points; 
+  }, [markForOptimization]);
 
-      const handleMachineInherit = useCallback((targetMachineName, sourceMachineName) => {
-        // Get the target machine from placed machines
-        const targetMachine = machines[targetMachineName];
-        if (!targetMachine) return;
 
-        // Get the source machine either from placed machines or available machines
-        const sourceMachine = machines[sourceMachineName] || 
-          availableMachines.find(m => m.name === sourceMachineName);
-        
-        if (!sourceMachine) return;
+  const handlePerforationAdd = useCallback((x, y) => {
+    const hasWall = walls.some(wall => wall.x === x && wall.y === y);
+  
+    if (hasWall) {
+      setPerforations(prevPerforations => {
+        const hasPerforation = prevPerforations.some(perf => perf.x === x && perf.y === y);
+        if (hasPerforation) {
+          return prevPerforations.filter(perf => !(perf.x === x && perf.y === y));
+        }
+        return [...prevPerforations, { x, y }];
+      });
+      markForOptimization();  
+    }
+  }, [walls, markForOptimization]);
+  
 
-        // Create merged history combining both machines
-        const mergedHistory = {
-          ...(targetMachine.mergedHistory || { [targetMachineName]: true }),
-          ...(sourceMachine.mergedHistory || { [sourceMachineName]: true })
-        };
+  const handleMachinePlace = useCallback((x, y) => {
+    if (!selectedMachine) return;
 
-        // Update the target machine with merged data
-        const updatedMachines = {
-          ...machines,
-          [targetMachineName]: {
-            ...targetMachine,
-            mergedHistory,
-            description: [
-              targetMachine.description,
-              sourceMachine.description
-            ].filter(Boolean).join(' + ')
+    const hasWall = walls.some(wall => wall.x === x && wall.y === y);
+
+    // Check if there's already a machine at this position
+    const existingMachine = Object.entries(machines).find(([_, pos]) => pos.x === x && pos.y === y);
+
+    if (!hasWall && !existingMachine) {
+      // Place the machine normally with initial structure
+      setMachines(prevMachines => ({
+        ...prevMachines,
+        [selectedMachine.name]: {
+          x,
+          y,
+          description: selectedMachine.description || '',
+          mergedHistory: { [selectedMachine.name]: true }
+        }
+      }));
+
+      setAvailableMachines(prev => prev.filter(m => m.name !== selectedMachine.name));
+      setSelectedMachine(null);
+      setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
+    }
+  }, [walls, machines, selectedMachine]);
+
+  const handleMachineMove = useCallback((machineName, x, y) => {
+    const hasWall = walls.some(wall => wall.x === x && wall.y === y);
+
+    // Check if there's already a machine at this position
+    const existingMachine = Object.entries(machines).find(([name, pos]) =>
+      name !== machineName && pos.x === x && pos.y === y
+    );
+
+    if (!hasWall && !existingMachine) {
+      // Move the machine normally while preserving its structure
+      setMachines(prevMachines => {
+        const currentMachine = prevMachines[machineName] || { mergedHistory: { [machineName]: true } };
+        return {
+          ...prevMachines,
+          [machineName]: {
+            ...currentMachine,
+            x,
+            y
           }
         };
+      });
+      setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
+    }
+  }, [walls, machines]);
 
-        // If source machine was placed, remove it from machines
-        if (machines[sourceMachineName]) {
-          delete updatedMachines[sourceMachineName];
-        }
+  const handleMachineRemove = useCallback((machineName) => {
+    // Add the machine back to available machines
+    const machineToAdd = {
+      name: machineName,
+      description: machines[machineName]?.description
+    };
+    setAvailableMachines(prev => [...prev, machineToAdd]);
 
-        // Update cables
-        const updatedCables = (importedCables.length > 0 ? importedCables : cables).map(cable => {
-          const newCable = { ...cable };
-          
-          // Update source if it matches the source machine
-          if (cable.source === sourceMachineName) {
-            newCable.source = targetMachineName;
-            newCable.originalSource = sourceMachineName;
-          }
-          
-          // Update target if it matches the source machine
-          if (cable.target === sourceMachineName) {
-            newCable.target = targetMachineName;
-            newCable.originalTarget = sourceMachineName;
-          }
-          
-          return newCable;
-        });
+    // Remove the machine from placed machines
+    setMachines(prev => {
+      const newMachines = { ...prev };
+      delete newMachines[machineName];
+      return newMachines;
+    });
+    setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
+  }, [machines]);
 
-        // Update state
-        setMachines(updatedMachines);
-        if (importedCables.length > 0) {
-          setImportedCables(updatedCables);
-        } else {
-          setCables(updatedCables);
-        }
+  const handleAddNetwork = () => {
+    if (networks.length >= MAX_NETWORKS) return;
 
-        // Remove the source machine from available machines if it was there
-        setAvailableMachines(prev => prev.filter(m => m.name !== sourceMachineName));
-        setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
-      }, [machines, cables, importedCables, availableMachines]);
+    const newNetwork = {
+      id: Date.now().toString(),
+      name: `Network ${networks.length + 1}`,
+      color: `#${Math.floor(Math.random() * 16777215).toString(16)}`,
+      isDefault: false,
+      visible: true,
+      functions: []
+    };
 
-      const handleCanvasSetup = (config) => {
-        setCanvasConfig({
-          width: config.width,
-          height: config.height,
-          gridResolution: config.gridResolution,
-          backgroundImage: config.image
-        });
-        setShowInitialSetup(false);
-      };
+    handleNetworksChange([...networks, newNetwork]);
+  };
 
-      // Add effect to handle path optimization after machine updates
-      useEffect(() => {
-        // Only calculate paths when we have at least 2 machines and some cables to route
-        const machineCount = Object.keys(machines).length;
-        const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
-          .filter(cable => machines[cable.source] && machines[cable.target]);
-        
-        if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
-          fetchOptimalPaths();
-        }
-      }, [machineUpdateCounter]); // Only depend on the update counter
-      
+  const handleRemoveNetwork = (networkId) => {
+    const network = networks.find(n => n.id === networkId);
+    if (network?.isDefault) return; // Prevent removing default networks
 
-      
-      return (
-        <div className="flex flex-col h-full gap-4">
-          <InitialSetupModal
-            isOpen={showInitialSetup}
-            onClose={() => setShowInitialSetup(false)}
-            onSubmit={handleCanvasSetup}
-          />
+    handleNetworksChange(networks.filter(n => n.id !== networkId));
+  };
 
-          <div className="flex justify-between items-center">
-            <input
-              type="file"
-              accept=".csv"
-              onChange={handleFileUpload}
-              className="hidden"
-              id="cable-import"
-            />
-            <Button onClick={() => document.getElementById('cable-import').click()}>
-              Import Cable List
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowCableList(!showCableList)}
-            >
-              {showCableList ? 'Hide' : 'Show'} Cable List
-            </Button>
+  const handleNetworkVisibilityChange = (networkId, checked) => {
+    setNetworks(prev => prev.map(network =>
+      network.id === networkId
+        ? { ...network, visible: checked }
+        : network
+    ));
+    // Update networkVisibility state as well
+    const network = networks.find(n => n.id === networkId);
+    if (network) {
+      setNetworkVisibility(prev => ({
+        ...prev,
+        [network.name]: checked
+      }));
+    }
+  };
+  //revisar
+  const handleNetworksChange = (updatedNetworks) => {
+    setNetworks(updatedNetworks);
+
+    const machineCount = Object.keys(machines).length;
+    const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
+      .filter(cable => machines[cable.source] && machines[cable.target]);
+
+    if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
+      fetchOptimalPaths();
+    }
+  };
+
+  const handleFunctionDrop = (networkId, functionName) => {
+    setNetworks(prev => prev.map(network => ({
+      ...network,
+      functions: network.id === networkId
+        ? [...new Set([...network.functions, functionName])]
+        : network.functions.filter(f => f !== functionName)
+    })));
+  };
+  useEffect(() => {
+    const machineCount = Object.keys(machines).length;
+    const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
+      .filter(cable => machines[cable.source] && machines[cable.target]);
+
+    if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
+      fetchOptimalPaths();
+    }
+  }, [networks]); // 🔁 cuando cambien las redes
+
+  // Get unique networks and their info
+  const networkInfo = useMemo(() => {
+    // Create a map of network types to their cable counts
+    const networkCableCounts = new Map();
+
+    cables.forEach(cable => {
+      const network = networks.find(n => n.functions.includes(cable.cableFunction));
+      if (network) {
+        const count = networkCableCounts.get(network.name) || 0;
+        networkCableCounts.set(network.name, count + 1);
+      }
+    });
+
+    return networks.map(network => ({
+      type: network.name,
+      color: network.color,
+      cables: new Set(Array(networkCableCounts.get(network.name) || 0).fill(null)),
+      visible: networkVisibility[network.name] !== false
+    }));
+  }, [networks, cables, networkVisibility]);
+
+  const handleMachineInherit = useCallback((targetMachineName, sourceMachineName) => {
+    // Get the target machine from placed machines
+    const targetMachine = machines[targetMachineName];
+    if (!targetMachine) return;
+
+    // Get the source machine either from placed machines or available machines
+    const sourceMachine = machines[sourceMachineName] ||
+      availableMachines.find(m => m.name === sourceMachineName);
+
+    if (!sourceMachine) return;
+
+    // Create merged history combining both machines
+    const mergedHistory = {
+      ...(targetMachine.mergedHistory || { [targetMachineName]: true }),
+      ...(sourceMachine.mergedHistory || { [sourceMachineName]: true })
+    };
+
+    // Update the target machine with merged data
+    const updatedMachines = {
+      ...machines,
+      [targetMachineName]: {
+        ...targetMachine,
+        mergedHistory,
+        description: [
+          targetMachine.description,
+          sourceMachine.description
+        ].filter(Boolean).join(' + ')
+      }
+    };
+
+    // If source machine was placed, remove it from machines
+    if (machines[sourceMachineName]) {
+      delete updatedMachines[sourceMachineName];
+    }
+
+    // Update cables
+    const updatedCables = (importedCables.length > 0 ? importedCables : cables).map(cable => {
+      const newCable = { ...cable };
+
+      // Update source if it matches the source machine
+      if (cable.source === sourceMachineName) {
+        newCable.source = targetMachineName;
+        newCable.originalSource = sourceMachineName;
+      }
+
+      // Update target if it matches the source machine
+      if (cable.target === sourceMachineName) {
+        newCable.target = targetMachineName;
+        newCable.originalTarget = sourceMachineName;
+      }
+
+      return newCable;
+    });
+
+    // Update state
+    setMachines(updatedMachines);
+    if (importedCables.length > 0) {
+      setImportedCables(updatedCables);
+    } else {
+      setCables(updatedCables);
+    }
+
+    // Remove the source machine from available machines if it was there
+    setAvailableMachines(prev => prev.filter(m => m.name !== sourceMachineName));
+    setMachineUpdateCounter(c => c + 1); // Increment counter to trigger optimization
+  }, [machines, cables, importedCables, availableMachines]);
+
+  const handleCanvasSetup = (config) => {
+    setCanvasConfig({
+      width: config.width,
+      height: config.height,
+      gridResolution: config.gridResolution,
+      backgroundImage: config.image
+    });
+    setShowInitialSetup(false);
+  };
+
+  // Add effect to handle path optimization after machine updates
+  useEffect(() => {
+    // Only calculate paths when we have at least 2 machines and some cables to route
+    const machineCount = Object.keys(machines).length;
+    const cablesToRoute = (importedCables.length > 0 ? importedCables : cables)
+      .filter(cable => machines[cable.source] && machines[cable.target]);
+
+    if (machineCount >= 2 && cablesToRoute.length > 0 && !isLoading) {
+      fetchOptimalPaths();
+    }
+  }, [machineUpdateCounter]); // Only depend on the update counter
+
+  useEffect(() => {
+    if (!needsOptimization) return;
+    fetchOptimalPaths();
+    setNeedsOptimization(false);
+  }, [needsOptimization, fetchOptimalPaths]);
+  
+
+  return (
+    <div className="flex flex-col h-full gap-4">
+      <InitialSetupModal
+        isOpen={showInitialSetup}
+        onClose={() => setShowInitialSetup(false)}
+        onSubmit={handleCanvasSetup}
+      />
+
+      <div className="flex justify-between items-center">
+        <input
+          type="file"
+          accept=".csv"
+          onChange={handleFileUpload}
+          className="hidden"
+          id="cable-import"
+        />
+        <Button onClick={() => document.getElementById('cable-import').click()}>
+          Import Cable List
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => setShowCableList(!showCableList)}
+        >
+          {showCableList ? 'Hide' : 'Show'} Cable List
+        </Button>
+      </div>
+
+      {showCableList && importedCables.length > 0 && (
+        <Card className="p-4">
+          <div className="overflow-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Cable Label
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Source
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Target
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Function
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Length
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {importedCables.map((cable, idx) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      {cable.cableLabel}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {cable.source}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {cable.target}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {cable.cableFunction}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {cable.length}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-    
-          {showCableList && importedCables.length > 0 && (
-            <Card className="p-4">
-              <div className="overflow-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Cable Label
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Source
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Target
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Function
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Length
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {importedCables.map((cable, idx) => (
-                      <tr key={idx} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                          {cable.cableLabel}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {cable.source}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {cable.target}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {cable.cableFunction}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {cable.length}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          )}
+        </Card>
+      )}
 
-<div className="flex gap-4">
+      <div className="flex gap-4">
         <Card className="w-64 p-4 flex flex-col">
           <div className="flex gap-2 mb-4 pb-4 border-b">
             <Button
@@ -836,17 +845,15 @@ export const LayoutEditor = () => {
                       handleMachineSelect(machine);
                     }
                   }}
-                  className={`flex items-center gap-2 p-2 rounded-md border transition-colors ${
-                    selectedMachine?.name === machine.name 
-                      ? 'bg-accent text-accent-foreground border-accent' 
+                  className={`flex items-center gap-2 p-2 rounded-md border transition-colors ${selectedMachine?.name === machine.name
+                      ? 'bg-accent text-accent-foreground border-accent'
                       : inheritMode.active
                         ? 'bg-background hover:bg-blue-50 cursor-copy'
                         : 'bg-background hover:bg-accent/50 cursor-pointer'
-                  }`}
+                    }`}
                 >
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-medium ${
-                    inheritMode.active ? 'bg-blue-500' : 'bg-green-500'
-                  }`}>
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-medium ${inheritMode.active ? 'bg-blue-500' : 'bg-green-500'
+                    }`}>
                     {machine.name}
                   </div>
                   <div className="flex flex-col">
@@ -910,7 +917,7 @@ export const LayoutEditor = () => {
               perforations={perforations}
               machines={machines}
               cables={importedCables.length > 0 ? importedCables : cables}
-              networks={networks}   
+              networks={networks}
               networkVisibility={networkVisibility}
               activeMode={editorMode}
               selectedMachine={selectedMachine}
@@ -944,7 +951,7 @@ export const LayoutEditor = () => {
           <div className="flex justify-between items-center">
             <h2 className="text-lg font-semibold">Cable Networks</h2>
             {networks.length < MAX_NETWORKS && (
-              <Button 
+              <Button
                 onClick={handleAddNetwork}
                 size="sm"
                 className="gap-1"
@@ -962,7 +969,7 @@ export const LayoutEditor = () => {
                   <div className="flex items-center gap-2 flex-1">
                     <Switch
                       checked={networkVisibility[network.name] !== false}
-                      onCheckedChange={(checked) => 
+                      onCheckedChange={(checked) =>
                         handleNetworkVisibilityChange({
                           ...networkVisibility,
                           [network.name]: checked
@@ -970,10 +977,9 @@ export const LayoutEditor = () => {
                       }
                     />
                     <div className="flex items-center gap-2">
-                      <div 
-                        className={`w-4 h-4 rounded-full transition-transform ${
-                          hoveredNetwork === network.name ? 'scale-125' : ''
-                        }`}
+                      <div
+                        className={`w-4 h-4 rounded-full transition-transform ${hoveredNetwork === network.name ? 'scale-125' : ''
+                          }`}
                         style={{ backgroundColor: network.color }}
                         onMouseEnter={() => setHoveredNetwork(network.name)}
                         onMouseLeave={() => setHoveredNetwork(null)}

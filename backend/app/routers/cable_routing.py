@@ -137,7 +137,7 @@ def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[Pa
 
     if min_dist_to_tray == 0 and redCalble==1.0:
         print("Alpargata")
-        return -0.24 
+        return -0.40 
     
 
     # Base weight for open areas
