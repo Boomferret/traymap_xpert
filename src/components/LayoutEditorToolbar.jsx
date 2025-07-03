@@ -14,6 +14,12 @@ export const LayoutEditorToolbar = ({ activeMode, onModeChange, machines }) => {
         Add Walls
       </Button>
       <Button 
+        variant={activeMode === EditorModes.TRAY ? "secondary" : "outline"}
+        onClick={() => onModeChange(EditorModes.TRAY)}
+      >
+        Add Tray
+      </Button>
+      <Button 
         variant={activeMode === EditorModes.PERFORATION ? "secondary" : "outline"}
         onClick={() => onModeChange(EditorModes.PERFORATION)}
         disabled={activeMode === EditorModes.VIEW}

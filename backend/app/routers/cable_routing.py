@@ -37,6 +37,7 @@ class GridConfig(BaseModel):
     width: int = Field(..., gt=0)
     height: int = Field(..., gt=0)
     walls: List[Point] = []
+    trays: List[Point]=[]
     perforations: List[Point] = []
     machines: Dict[str, Machine] = {}
     cables: List[Cable] = []
@@ -124,11 +125,21 @@ class FullComponent:
 
 # ----------------- HELPER FUNCTIONS -----------------
 
-def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[PathPoint],redCalble:float = 1.0) -> float:
+def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[PathPoint], trays: Set[PathPoint]=[],redCalble:float = 1.0) -> float:
     """
     Calculate the weight for a cell based on its distance to the nearest wall.
     Cells closer to walls have lower weights (preferred for routing).
     """
+    min_dist_to_tray = float('inf')
+    for tray in trays:
+        dist = abs(x - tray.x) + abs(y - tray.y)
+        min_dist_to_tray = min(min_dist_to_tray, dist)
+
+    if min_dist_to_tray == 0 and redCalble==1.0:
+        print("Alpargata")
+        return -0.24 
+    
+
     # Base weight for open areas
     base_weight = 10.0
     
@@ -142,7 +153,7 @@ def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[Pa
     for wall in walls:
         dist = abs(x - wall.x) + abs(y - wall.y)  # Manhattan distance
         min_dist_to_wall = min(min_dist_to_wall, dist)
-    
+
     # Weight calculation: closer to walls = lower weight
     # Weight decreases exponentially as we get closer to walls
     #if the cable is shorther than te route we add a new param to be able to recalcule the weights
@@ -159,7 +170,7 @@ def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[Pa
     else:
         return base_weight  # Full weight for cells far from walls
 
-def build_weighted_graph(width: int, height: int, walls: Set[PathPoint],redCable:float = 1.0) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
+def build_weighted_graph(width: int, height: int, walls: Set[PathPoint], trays: Set[PathPoint] = set(),redCable:float = 1.0) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
     """
     Build adjacency with weights. Each neighbor has (neighbor_point, weight) where 
     weight favors cells closer to walls.
@@ -176,7 +187,7 @@ def build_weighted_graph(width: int, height: int, walls: Set[PathPoint],redCable
                     np = PathPoint(nx, ny)
                     if np not in walls:
                         # Calculate weight for the destination cell
-                        weight = calculate_cell_weight(nx, ny, width, height, walls,redCable)
+                        weight = calculate_cell_weight(nx, ny, width, height, walls,trays,redCable)
                         neighbors.append((np, weight))
             graph[p] = neighbors
     return graph
@@ -232,7 +243,7 @@ def path_distance(path: List[PathPoint]) -> int:
     """Number of edges in a path => len(path)-1."""
     return max(0, len(path) - 1)
 
-def weighted_path_cost(path: List[PathPoint], width: int, height: int, walls: Set[PathPoint]) -> float:
+def weighted_path_cost(path: List[PathPoint], width: int, height: int, walls: Set[PathPoint], trays: Set[PathPoint] = set()) -> float:
     """Calculate the actual weighted cost of a path."""
     if len(path) <= 1:
         return 0.0
@@ -240,7 +251,7 @@ def weighted_path_cost(path: List[PathPoint], width: int, height: int, walls: Se
     total_cost = 0.0
     for i in range(1, len(path)):
         p = path[i]
-        weight = calculate_cell_weight(p.x, p.y, width, height, walls)
+        weight = calculate_cell_weight(p.x, p.y, width, height, walls,trays=trays)
         total_cost += weight
     return total_cost
 
@@ -414,6 +425,7 @@ def generate_all_components(
     width: int,
     height: int,
     walls: Set[PathPoint],
+    trays:Set[PathPoint],
     cables: List[Cable] = None,
     machines: Dict[str, Machine] = None
 ) -> List[FullComponent]:
@@ -750,6 +762,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         print(f"Grid: {config.width}x{config.height}")
         print(f"Machines: {len(config.machines)}, Cables: {len(config.cables)}")
         print(f"Walls: {len(config.walls)}, Perfs: {len(config.perforations)}")
+        print(f"Trays: {len(config.trays)}")
 
         max_passes = 5
 
@@ -762,11 +775,13 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
         # Build walls set
         walls = {PathPoint(w.x, w.y) for w in config.walls}
+        trays = {PathPoint(t.x, t.y) for t in config.trays}
         perfs = {PathPoint(p.x, p.y) for p in config.perforations}
         walls -= perfs  # remove perforations from the walls
-
+        print(walls)
+        print(trays)
         # 1) Full Dijkstra graph
-        weighted_graph = build_weighted_graph(config.width, config.height, walls)
+        weighted_graph = build_weighted_graph(config.width, config.height, walls,trays=trays)
 
         # 2) Collect terminals
         terminals = []
@@ -806,6 +821,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                     config.width,
                     config.height,
                     walls,
+                    trays,
                     cables=config.cables,
                     machines=config.machines
                 )
@@ -879,7 +895,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             #TODO recalcular las rutas de cables que su lenght< que el camino 
             print("AAAAAAAAAAAAAA" + cb.length)
             if (cb.length!=""):
-                expected_len = float(cb.length.replace("m", ""))
+                expected_len = float(cb.length.replace("m", "").replace(",", "."))
             else: expected_len=1000000
             print("BBBBBBBBBBBBBBBBBBB" + str(expected_len))
 
@@ -896,7 +912,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
                 while attempt < max_attempts and redCable > 0.0:
                     print(f"  ➤ Intento {attempt+1}: recalculando con redCable = {redCable:.2f}")
-                    less_wall_graph = build_weighted_graph(config.width, config.height, walls, redCable=redCable)
+                    less_wall_graph = build_weighted_graph(config.width, config.height, walls, redCable=redCable,trays=trays)
                     result = dijkstra_path(spt, tpt, less_wall_graph)
 
                     if result:

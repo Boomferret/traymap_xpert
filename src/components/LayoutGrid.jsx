@@ -163,6 +163,7 @@ export const LayoutGrid = ({
     gridSize,
     cellSize,
     walls = [],
+    trays = [],
     perforations = [],
     machines = {},
     cables = [],
@@ -172,6 +173,7 @@ export const LayoutGrid = ({
     selectedMachine = null,
     selectedCable = null,
     onWallAdd,
+    onTrayAdd,
     onPerforationAdd,
     onMachinePlace,
     onMachineMove,
@@ -267,6 +269,8 @@ export const LayoutGrid = ({
       if (selectedMachine) return 'cursor-crosshair';
       switch (activeMode) {
         case EditorModes.WALL: return 'cursor-crosshair';
+        case EditorModes.TRAY: return 'cursor-crosshair';
+
         case EditorModes.PERFORATION: return 'cursor-cell';
         default: return 'cursor-default';
       }
@@ -280,22 +284,38 @@ export const LayoutGrid = ({
         setDragStart(coords);
         onWallAdd(coords.x, coords.y);
       }
-    }, [activeMode, getGridCoordinates, onWallAdd]);
+      if (activeMode === EditorModes.TRAY) {
+        e.preventDefault();
+        const coords = getGridCoordinates(e);
+        setIsDragging(true);
+        setDragStart(coords);
+        onWallAdd(coords.x, coords.y);
+      }
+    }, [activeMode, getGridCoordinates, onWallAdd,onTrayAdd]);
 
     const handleMouseMove = useCallback((e) => {
       const coords = getGridCoordinates(e);
-      if (isDragging && dragStart && activeMode === EditorModes.WALL) {
-        const points = onWallAdd(dragStart.x, dragStart.y, coords.x, coords.y, true);
-        setPreviewWalls(points || []);
+      if (isDragging && dragStart) {
+        if (activeMode === EditorModes.WALL) {
+          const points = onWallAdd(dragStart.x, dragStart.y, coords.x, coords.y, true);
+          setPreviewWalls(points || []);
+        } else if (activeMode === EditorModes.TRAY) {
+          const points = onTrayAdd(dragStart.x, dragStart.y, coords.x, coords.y, true);
+          setPreviewWalls(points || []); 
+        }
       }
+      
       setDragPosition(coords);
     }, [isDragging, dragStart, activeMode, getGridCoordinates, onWallAdd]);
 
     const handleMouseUp = useCallback(() => {
-      if (isDragging && dragStart && activeMode === EditorModes.WALL) {
+      if (isDragging && dragStart ) {
         const coords = dragPosition;
-        if (coords) {
+        if (coords && activeMode === EditorModes.WALL) {
           onWallAdd(dragStart.x, dragStart.y, coords.x, coords.y, false);
+        }
+        if (coords && activeMode === EditorModes.TRAY) {
+          onTrayAdd(dragStart.x, dragStart.y, coords.x, coords.y, false);
         }
       }
       setIsDragging(false);
@@ -326,6 +346,9 @@ export const LayoutGrid = ({
         case EditorModes.WALL:
           onWallAdd(coords.x, coords.y);
           break;
+        case EditorModes.TRAY:
+            onTrayAdd(coords.x, coords.y);
+            break;
         case EditorModes.PERFORATION:
           onPerforationAdd(coords.x, coords.y);
           break;
@@ -336,7 +359,7 @@ export const LayoutGrid = ({
           }
           break;
       }
-    }, [activeMode, selectedMachine, moveMode, onWallAdd, onPerforationAdd, onMachinePlace, onMachineMove, gridSize]);
+    }, [activeMode, selectedMachine, moveMode, onWallAdd,onTrayAdd, onPerforationAdd, onMachinePlace, onMachineMove, gridSize]);
 
     // Section and machine interaction handlers
     const handleMachineDragStart = useCallback((e, machineName) => {
@@ -1188,6 +1211,17 @@ export const LayoutGrid = ({
                     fill="#4b5563"
                   />
                 ))}
+                {trays.map((tray, index) => (
+                  <rect
+                    key={`tray-${tray.x}-${tray.y}-${index}`}
+                    x={tray.x * cellSize}
+                    y={tray.y * cellSize}
+                    width={cellSize}
+                    height={cellSize}
+                    fill="#3b82f6" // Azul (o el color que prefieras)
+                    opacity="0.5"
+                  />
+                ))}
 
                 {/* Perforations */}
                 {perforations.map((perf, index) => (
@@ -1456,6 +1490,12 @@ LayoutGrid.propTypes = {
     y: PropTypes.number
   })
   ),
+
+  trays: PropTypes.arrayOf(PropTypes.shape({
+    x: PropTypes.number,
+    y: PropTypes.number
+  })),
+  
   perforations: PropTypes.arrayOf(PropTypes.shape({
     x: PropTypes.number,
     y: PropTypes.number
@@ -1469,6 +1509,7 @@ LayoutGrid.propTypes = {
   selectedMachine: PropTypes.object,
   selectedCable: PropTypes.string,
   onWallAdd: PropTypes.func.isRequired,
+  onTrayAdd: PropTypes.func.isRequired,
   onPerforationAdd: PropTypes.func.isRequired,
   onMachinePlace: PropTypes.func.isRequired,
   onMachineMove: PropTypes.func.isRequired,

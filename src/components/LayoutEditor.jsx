@@ -100,6 +100,7 @@ export const LayoutEditor = () => {
     });
     const [editorMode, setEditorMode] = useState(EditorModes.WALL);
     const [walls, setWalls] = useState([]);
+    const [trays, setTray] = useState([]);
     const [perforations, setPerforations] = useState([]);
     const [machines, setMachines] = useState({});
     const [availableMachines, setAvailableMachines] = useState([]);
@@ -148,6 +149,7 @@ export const LayoutEditor = () => {
           width: canvasConfig.width * 10,
           height: canvasConfig.height * 10,
           walls,
+          trays,
           perforations,
           machines,
           cables: availableCables.map(cable => ({
@@ -266,7 +268,62 @@ export const LayoutEditor = () => {
         setSelectedMachine(machine);
         setEditorMode(EditorModes.MACHINE);
       };
-    
+      const handleTrayAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
+        // Caso de punto único
+        if (endX === undefined || endY === undefined) {
+          setTray(prevTray => {
+            const exists = prevTray.some(p => p.x === startX && p.y === startY);
+            if (exists) {
+              return prevTray.filter(p => !(p.x === startX && p.y === startY));
+            }
+            return [...prevTray, { x: startX, y: startY }];
+          });
+          return;
+        }
+      
+        // Calcular puntos entre start y end (con Bresenham, como en walls)
+        const points = [];
+        const dx = Math.abs(endX - startX);
+        const dy = Math.abs(endY - startY);
+        const sx = startX < endX ? 1 : -1;
+        const sy = startY < endY ? 1 : -1;
+        let err = dx - dy;
+      
+        let x = startX;
+        let y = startY;
+      
+        while (true) {
+          points.push({ x, y });
+          if (x === endX && y === endY) break;
+          const e2 = 2 * err;
+          if (e2 > -dy) {
+            err -= dy;
+            x += sx;
+          }
+          if (e2 < dx) {
+            err += dx;
+            y += sy;
+          }
+        }
+      
+        // Solo actualiza tray al soltar el mouse (o sea, !isDragging)
+        if (!isDragging) {
+          setTray(prevTray => {
+            const newTray = [...prevTray];
+            points.forEach(point => {
+              const idx = newTray.findIndex(p => p.x === point.x && p.y === point.y);
+              if (idx === -1) {
+                newTray.push({ x: point.x, y: point.y });
+              } else {
+                newTray.splice(idx, 1);
+              }
+            });
+            return newTray;
+          });
+        }
+      
+        return points;
+      }, []);
       const handleWallAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
         // If no end coordinates provided, treat as single wall
         if (endX === undefined || endY === undefined) {
@@ -279,7 +336,8 @@ export const LayoutEditor = () => {
           });
           return;
         }
-
+        
+        
         // Calculate all points along the line using Bresenham's line algorithm
         const points = [];
         const dx = Math.abs(endX - startX);
@@ -681,6 +739,18 @@ export const LayoutEditor = () => {
               <Wall className="h-5 w-5" />
             </Button>
             <Button
+              variant={editorMode === EditorModes.TRAY ? "secondary" : "outline"}
+              size="icon"
+              onClick={() => {
+                setEditorMode(EditorModes.TRAY);
+                setSelectedMachine(null);
+              }}
+              title="Draw Tray"
+              className="w-10 h-10"
+            >
+              <Wall className="h-5 w-5" />
+            </Button>
+            <Button
               variant={editorMode === EditorModes.PERFORATION ? "secondary" : "outline"}
               size="icon"
               onClick={() => {
@@ -784,11 +854,13 @@ export const LayoutEditor = () => {
               perforations={perforations}
               machines={machines}
               cables={importedCables.length > 0 ? importedCables : cables}
-              networks={networks}
+              networks={networks}   
               networkVisibility={networkVisibility}
               activeMode={editorMode}
               selectedMachine={selectedMachine}
               onWallAdd={handleWallAdd}
+              onTrayAdd={handleTrayAdd}
+              trays={trays}
               onPerforationAdd={handlePerforationAdd}
               onMachinePlace={handleMachinePlace}
               onMachineMove={handleMachineMove}
