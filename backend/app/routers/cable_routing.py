@@ -136,7 +136,6 @@ def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[Pa
         min_dist_to_tray = min(min_dist_to_tray, dist)
 
     if min_dist_to_tray == 0 and redCalble==1.0:
-        print("Alpargata")
         return -0.40 
     
 
@@ -767,11 +766,15 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         max_passes = 5
 
         # Validate cables
+# Filter cables with valid machine references
+        valid_cables = []
         for cb in config.cables:
-            if cb.source not in config.machines:
-                raise HTTPException(422, f"Source machine {cb.source} not found")
-            if cb.target not in config.machines:
-                raise HTTPException(422, f"Target machine {cb.target} not found")
+            if cb.source in config.machines and cb.target in config.machines:
+                valid_cables.append(cb)
+            else:
+                print(f"[INFO] Ignoring cable {cb.cableLabel or f'{cb.source}-{cb.target}'} due to missing machine(s)")
+
+        config.cables = valid_cables
 
         # Build walls set
         walls = {PathPoint(w.x, w.y) for w in config.walls}
@@ -905,9 +908,9 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             if expected_len and actual_len > expected_len:
                 print(f"[WARN] Cable {cid} tiene ruta de {actual_len:.2f}m (> {expected_len:.2f}m). Recalculando...")
 
-                max_attempts = 5
+                max_attempts = 2
                 attempt = 0
-                redCable = 0.55
+                redCable = 0.25
                 new_route = None
 
                 while attempt < max_attempts and redCable > 0.0:

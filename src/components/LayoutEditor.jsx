@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { EditorModes } from '@/constants/editorModes';
 import { LayoutGrid } from './LayoutGrid';
-import { Square as Wall, CircleDot, Plus, X, GripVertical,PowerOff,Wrench,Truck ,Tractor} from 'lucide-react';
+import { Square as Wall, CircleDot, Plus, X, GripVertical, PowerOff, Wrench, Truck, Tractor } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -96,8 +96,11 @@ export const LayoutEditor = () => {
   const [canvasConfig, setCanvasConfig] = useState({
     width: 10,
     height: 10,
-    gridResolution: 0.1
+    gridResolution: 0.1,
+    backgroundImage:null
   });
+  const fileInputRef = useRef(null);
+
   const [editorMode, setEditorMode] = useState(EditorModes.WALL);
   const [walls, setWalls] = useState([]);
   const [trays, setTray] = useState([]);
@@ -205,6 +208,182 @@ export const LayoutEditor = () => {
     }
   }, [machines, walls, perforations, cables, importedCables, canvasConfig.width, canvasConfig.height, networks]);
 
+
+
+  const handleExport = async () => {
+    // Función para convertir URL de imagen a base64 usando canvas
+    async function getBase64Image(imgUrl) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous'; // evita problemas CORS si la imagen es externa
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const dataURL = canvas.toDataURL('image/png');
+          resolve(dataURL);
+        };
+        img.onerror = (e) => {
+          console.error('Error loading image for export:', e);
+          reject(new Error('No se pudo cargar la imagen para exportar'));
+        };
+        img.src = imgUrl;
+      });
+    }
+  
+    // Función para convertir un File a base64 usando FileReader
+    async function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Error leyendo archivo'));
+        reader.readAsDataURL(file);
+      });
+    }
+  
+    try {
+      let backgroundImageBase64 = null;
+  
+      if (canvasConfig.backgroundImage) {
+        // Si es un string (ya sea url o base64)
+        if (typeof canvasConfig.backgroundImage === 'string') {
+          if (canvasConfig.backgroundImage.startsWith('data:image')) {
+            backgroundImageBase64 = canvasConfig.backgroundImage;
+          } else {
+            backgroundImageBase64 = await getBase64Image(canvasConfig.backgroundImage);
+          }
+        } else if (typeof canvasConfig.backgroundImage === 'object') {
+          // Asumimos que es el objeto con .file y .url del modal
+          if (canvasConfig.backgroundImage.file) {
+            backgroundImageBase64 = await fileToBase64(canvasConfig.backgroundImage.file);
+          } else if (canvasConfig.backgroundImage.url) {
+            backgroundImageBase64 = await getBase64Image(canvasConfig.backgroundImage.url);
+          }
+        }
+      }
+  
+      // Construimos el objeto exportado
+      const exportData = {
+        walls,
+        trays,
+        perforations,
+        machines,
+        cables: importedCables.length > 0 ? importedCables : cables,
+        networks,
+        canvasConfig: {
+          width: canvasConfig.width,
+          height: canvasConfig.height,
+          gridResolution: canvasConfig.gridResolution,
+          backgroundImage: backgroundImageBase64
+        },
+        hananGrid,
+        steinerPoints
+      };
+  
+      // Convertir a JSON string con formato
+      const jsonStr = JSON.stringify(exportData, null, 2);
+  
+      // Descargar archivo JSON
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'layout-export.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+  
+      console.log('Exportación completada');
+    } catch (error) {
+      console.error('Error en exportación:', error);
+    }
+  };
+  
+  
+  
+
+  const handleImport = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const importedData = JSON.parse(e.target.result);
+
+        console.log("Imported JSON:", importedData); // útil para depuración
+
+        setWalls(importedData.walls || []);
+        setTray(importedData.trays || []);
+        setPerforations(importedData.perforations || []);
+        setMachines(importedData.machines || {});
+        if (importedData.allMachines) {
+          const reconstructedAvailableMachines = Object.entries(importedData.allMachines).map(
+            ([name, data]) => ({
+              name,
+              description: data.description || ''
+            })
+          );
+          setAvailableMachines(reconstructedAvailableMachines);
+        }
+
+        setCables(importedData.cables || []);
+        setImportedCables(importedData.cables || []);
+        setNetworks(importedData.networks || []);
+        setHananGrid(importedData.hananGrid || { xCoords: [], yCoords: [] });
+        setSteinerPoints(importedData.steinerPoints || []);
+        if (importedData.canvasConfig) {
+          setCanvasConfig(importedData.canvasConfig);
+        }
+        const uniqueMachines = new Set();
+        cables.forEach(cable => {
+          if (cable.source) uniqueMachines.add(cable.source);
+          if (cable.target) uniqueMachines.add(cable.target);
+        });
+
+        // Si tienes un estado para canvasConfig (no mostrado, pero implícito en tu `requestData`)
+        if (importedData.width && importedData.height) {
+          setCanvasConfig({
+            width: importedData.width / 10,
+            height: importedData.height / 10
+          });
+        }
+
+        // ✅ 2. Enviar al backend para procesar rutas
+        // Quitar allMachines antes de enviar al backend
+        const { canvasConfig, allMachines, ...dataForBackend } = importedData;
+
+        const response = await fetch('/api/optimize-paths', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(dataForBackend),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        console.log("Backend response:", result);
+
+        setBackendSections(result.sections || []);
+        setCableRoutes(result.routes || {});
+        setHananGrid(result.hananGrid || { xCoords: [], yCoords: [] });
+        setSteinerPoints(result.steinerPoints || []);
+
+      } catch (err) {
+        console.error("Error importing JSON:", err);
+        setError(`Error importing JSON: ${err.message}`);
+      }
+    };
+
+    reader.readAsText(file);
+  };
+
+
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -283,20 +462,20 @@ export const LayoutEditor = () => {
         }
         return [...prevTray, { x: startX, y: startY }];
       });
-      markForOptimization(); 
+      markForOptimization();
       return;
     }
-  
+
     const points = [];
     const dx = Math.abs(endX - startX);
     const dy = Math.abs(endY - startY);
     const sx = startX < endX ? 1 : -1;
     const sy = startY < endY ? 1 : -1;
     let err = dx - dy;
-  
+
     let x = startX;
     let y = startY;
-  
+
     while (true) {
       points.push({ x, y });
       if (x === endX && y === endY) break;
@@ -310,7 +489,7 @@ export const LayoutEditor = () => {
         y += sy;
       }
     }
-  
+
     if (!isDragging) {
       setTray(prevTray => {
         const newTray = [...prevTray];
@@ -324,31 +503,31 @@ export const LayoutEditor = () => {
         });
         return newTray;
       });
-      markForOptimization(); 
+      markForOptimization();
     }
-  
+
     return points;
   }, [markForOptimization]);
-  
+
 
   const handleRemoveWallsAndTrays = useCallback((startX, startY, endX, endY) => {
     if (endX === undefined || endY === undefined) {
       setWalls(prevWalls => prevWalls.filter(w => !(w.x === startX && w.y === startY)));
       setTray(prevTrays => prevTrays.filter(t => !(t.x === startX && t.y === startY)));
-      markForOptimization();  
+      markForOptimization();
       return;
     }
-  
+
     const points = [];
     const dx = Math.abs(endX - startX);
     const dy = Math.abs(endY - startY);
     const sx = startX < endX ? 1 : -1;
     const sy = startY < endY ? 1 : -1;
     let err = dx - dy;
-  
+
     let x = startX;
     let y = startY;
-  
+
     while (true) {
       points.push({ x, y });
       if (x === endX && y === endY) break;
@@ -362,15 +541,15 @@ export const LayoutEditor = () => {
         y += sy;
       }
     }
-  
+
     setWalls(prevWalls => prevWalls.filter(w => !points.some(p => p.x === w.x && p.y === w.y)));
     setTray(prevTrays => prevTrays.filter(t => !points.some(p => p.x === t.x && p.y === t.y)));
-    
-    markForOptimization();  
-  
+
+    markForOptimization();
+
     return points;
   }, [markForOptimization]);
-  
+
 
   const handleWallAdd = useCallback((startX, startY, endX, endY, isDragging = false) => {
     if (endX === undefined || endY === undefined) {
@@ -385,7 +564,7 @@ export const LayoutEditor = () => {
       if (!isDragging) markForOptimization();
       return;
     }
-        // Calculate all points along the line using Bresenham's line algorithm
+    // Calculate all points along the line using Bresenham's line algorithm
 
     const points = [];
     const dx = Math.abs(endX - startX);
@@ -427,13 +606,13 @@ export const LayoutEditor = () => {
       markForOptimization();
     }
 
-    return points; 
+    return points;
   }, [markForOptimization]);
 
 
   const handlePerforationAdd = useCallback((x, y) => {
     const hasWall = walls.some(wall => wall.x === x && wall.y === y);
-  
+
     if (hasWall) {
       setPerforations(prevPerforations => {
         const hasPerforation = prevPerforations.some(perf => perf.x === x && perf.y === y);
@@ -442,10 +621,10 @@ export const LayoutEditor = () => {
         }
         return [...prevPerforations, { x, y }];
       });
-      markForOptimization();  
+      markForOptimization();
     }
   }, [walls, markForOptimization]);
-  
+
 
   const handleMachinePlace = useCallback((x, y) => {
     if (!selectedMachine) return;
@@ -698,7 +877,7 @@ export const LayoutEditor = () => {
     fetchOptimalPaths();
     setNeedsOptimization(false);
   }, [needsOptimization, fetchOptimalPaths]);
-  
+
 
   return (
     <div className="flex flex-col h-full gap-4">
@@ -778,6 +957,22 @@ export const LayoutEditor = () => {
 
       <div className="flex gap-4">
         <Card className="w-64 p-4 flex flex-col">
+          <div className="flex gap-4 mt-4">
+            <button onClick={handleExport}>Exportar JSON</button>
+
+            <button onClick={() => fileInputRef.current.click()}>
+              Importar JSON
+            </button>
+
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept="application/json"
+              style={{ display: 'none' }}
+              onChange={handleImport}
+            />
+          </div>
+
           <div className="flex gap-2 mb-4 pb-4 border-b">
             <Button
               variant={editorMode === EditorModes.WALL ? "secondary" : "outline"}
@@ -846,10 +1041,10 @@ export const LayoutEditor = () => {
                     }
                   }}
                   className={`flex items-center gap-2 p-2 rounded-md border transition-colors ${selectedMachine?.name === machine.name
-                      ? 'bg-accent text-accent-foreground border-accent'
-                      : inheritMode.active
-                        ? 'bg-background hover:bg-blue-50 cursor-copy'
-                        : 'bg-background hover:bg-accent/50 cursor-pointer'
+                    ? 'bg-accent text-accent-foreground border-accent'
+                    : inheritMode.active
+                      ? 'bg-background hover:bg-blue-50 cursor-copy'
+                      : 'bg-background hover:bg-accent/50 cursor-pointer'
                     }`}
                 >
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-medium ${inheritMode.active ? 'bg-blue-500' : 'bg-green-500'
