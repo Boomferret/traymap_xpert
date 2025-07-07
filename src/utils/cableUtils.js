@@ -98,7 +98,8 @@ export const preprocessBlockedGrid = (walls, perforations, gridSize) => {
 
   // Devolver función que verifica si una celda está bloqueada
   return (x, y) => {
-    if (x < 0 || x >= gridSize.width || y < 0 || y >= gridSize.height) return true;
+    // Don't treat canvas boundaries as walls - allow pathfinding beyond canvas
+    if (x < 0 || x >= gridSize.width || y < 0 || y >= gridSize.height) return false;
     return blockedGrid[y][x];
   };
 };

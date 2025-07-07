@@ -33,7 +33,8 @@ const preprocessBlockedGrid = (walls, perforations, gridSize) => {
 
   // Helper function to check if a cell is blocked
   return (x, y) => {
-    if (x < 0 || x >= gridSize.width || y < 0 || y >= gridSize.height) return true;
+    // Don't treat canvas boundaries as walls - allow pathfinding beyond canvas
+    if (x < 0 || x >= gridSize.width || y < 0 || y >= gridSize.height) return false;
     return blockedGrid[y][x];
   };
 };
@@ -223,16 +224,29 @@ export const LayoutGrid = ({
       y: 0, 
       section: null 
     });
+    const [hasDragged, setHasDragged] = useState(false);
 
     // Handle background image
     useEffect(() => {
-      if (backgroundImage?.url) {
-        setImageUrl(backgroundImage.url);
+      // Handle both object format {url: '...', originalWidth: ..., originalHeight: ...} 
+      // and direct base64 string format from imported JSON
+      if (backgroundImage) {
+        if (typeof backgroundImage === 'string') {
+          // Direct base64 string from imported JSON
+          setImageUrl(backgroundImage);
+        } else if (backgroundImage?.url) {
+          // Object format from image upload modal
+          setImageUrl(backgroundImage.url);
+        }
+        
         return () => {
-          if (imageUrl) {
+          if (imageUrl && typeof backgroundImage === 'object' && backgroundImage?.url) {
+            // Only revoke object URLs, not base64 strings
             URL.revokeObjectURL(imageUrl);
           }
         };
+      } else {
+        setImageUrl(null);
       }
     }, [backgroundImage]);
 
@@ -242,11 +256,14 @@ export const LayoutGrid = ({
 
     // Calculate image scale and position
     const imageScale = useMemo(() => {
-      if (!backgroundImage?.originalWidth || !backgroundImage?.originalHeight) return 1;
-      
-      const scaleX = width / backgroundImage.originalWidth;
-      const scaleY = height / backgroundImage.originalHeight;
-      return Math.min(scaleX, scaleY);
+      // If backgroundImage is an object with originalWidth/originalHeight, use those
+      if (backgroundImage?.originalWidth && backgroundImage?.originalHeight) {
+        const scaleX = width / backgroundImage.originalWidth;
+        const scaleY = height / backgroundImage.originalHeight;
+        return Math.min(scaleX, scaleY);
+      }
+      // For imported base64 images without dimensions, use 1:1 scale
+      return 1;
     }, [width, height, backgroundImage]);
 
     // Event handlers
@@ -283,27 +300,32 @@ export const LayoutGrid = ({
         const coords = getGridCoordinates(e);
         setIsDragging(true);
         setDragStart(coords);
-        onWallAdd(coords.x, coords.y);
+        setHasDragged(false);
       }
       if (activeMode === EditorModes.TRAY) {
         e.preventDefault();
         const coords = getGridCoordinates(e);
         setIsDragging(true);
         setDragStart(coords);
-        onWallAdd(coords.x, coords.y);
+        setHasDragged(false);
       }
       if (activeMode === EditorModes.DELETE) {
         e.preventDefault();
         const coords = getGridCoordinates(e);
         setIsDragging(true);
         setDragStart(coords);
-        onDelete(coords.x, coords.y);
+        setHasDragged(false);
       }
-    }, [activeMode, getGridCoordinates, onWallAdd,onTrayAdd,onDelete]);
+    }, [activeMode, getGridCoordinates]);
 
     const handleMouseMove = useCallback((e) => {
       const coords = getGridCoordinates(e);
       if (isDragging && dragStart) {
+        // Check if we've actually moved from the start position
+        if (coords.x !== dragStart.x || coords.y !== dragStart.y) {
+          setHasDragged(true);
+        }
+        
         if (activeMode === EditorModes.WALL) {
           const points = onWallAdd(dragStart.x, dragStart.y, coords.x, coords.y, true);
           setPreviewWalls(points || []);
@@ -318,11 +340,11 @@ export const LayoutGrid = ({
       }
       
       setDragPosition(coords);
-    }, [isDragging, dragStart, activeMode, getGridCoordinates, onWallAdd]);
+    }, [isDragging, dragStart, activeMode, getGridCoordinates, onWallAdd, onTrayAdd, onDelete]);
 
-    const handleMouseUp = useCallback(() => {
-      if (isDragging && dragStart ) {
-        const coords = dragPosition;
+    const handleMouseUp = useCallback((e) => {
+      if (isDragging && dragStart && hasDragged) {
+        const coords = getGridCoordinates(e);
         if (coords && activeMode === EditorModes.WALL) {
           onWallAdd(dragStart.x, dragStart.y, coords.x, coords.y, false);
         }
@@ -337,10 +359,11 @@ export const LayoutGrid = ({
       setDragStart(null);
       setDragPosition(null);
       setPreviewWalls([]);
+      setHasDragged(false);
       if (draggedMachine) {
         setDraggedMachine(null);
       }
-    }, [isDragging, dragStart, dragPosition, activeMode, onWallAdd, draggedMachine]);
+    }, [isDragging, dragStart, activeMode, onWallAdd, onTrayAdd, onDelete, draggedMachine, hasDragged, getGridCoordinates]);
 
     const handleClick = useCallback((e) => {
       const coords = getGridCoordinates(e);
@@ -357,28 +380,30 @@ export const LayoutGrid = ({
         return;
       }
       
-      switch (activeMode) {
-        case EditorModes.WALL:
-          onWallAdd(coords.x, coords.y);
-          break;
-        case EditorModes.TRAY:
-            onTrayAdd(coords.x, coords.y);
+      // Only handle click placement if we haven't dragged
+      if (!hasDragged) {
+        switch (activeMode) {
+          case EditorModes.WALL:
+            onWallAdd(coords.x, coords.y);
             break;
-        case EditorModes.PERFORATION:
-          onPerforationAdd(coords.x, coords.y);
-          break;
-        case EditorModes.MACHINE:
-          if (selectedMachine) {
-            e.stopPropagation(); // Prevent clearing selection
-            onMachinePlace(coords.x, coords.y);
-          }
-          break;
-        case EditorModes.DELETE:
-          onDelete(coords.x, coords.y);
-          break;
-
+          case EditorModes.TRAY:
+              onTrayAdd(coords.x, coords.y);
+              break;
+          case EditorModes.PERFORATION:
+            onPerforationAdd(coords.x, coords.y);
+            break;
+          case EditorModes.MACHINE:
+            if (selectedMachine) {
+              e.stopPropagation(); // Prevent clearing selection
+              onMachinePlace(coords.x, coords.y);
+            }
+            break;
+          case EditorModes.DELETE:
+            onDelete(coords.x, coords.y);
+            break;
+        }
       }
-    }, [activeMode, selectedMachine, moveMode, onWallAdd,onTrayAdd, onPerforationAdd, onMachinePlace, onMachineMove, gridSize]);
+    }, [activeMode, selectedMachine, moveMode, onWallAdd,onTrayAdd, onPerforationAdd, onMachinePlace, onMachineMove, gridSize, hasDragged]);
 
     // Section and machine interaction handlers
     const handleMachineDragStart = useCallback((e, machineName) => {
@@ -1058,7 +1083,6 @@ export const LayoutGrid = ({
                 minWidth: `${width}px`
               }}
               onMouseLeave={handleMouseLeave}
-              onMouseUp={handleCellMouseUp}
             >
               <svg
                 ref={svgRef}
@@ -1093,10 +1117,10 @@ export const LayoutGrid = ({
                   <image
                     key="background-image"
                     href={imageUrl}
-                    width={backgroundImage.originalWidth * imageScale}
-                    height={backgroundImage.originalHeight * imageScale}
-                    x={(width - backgroundImage.originalWidth * imageScale) / 2}
-                    y={(height - backgroundImage.originalHeight * imageScale) / 2}
+                    width={backgroundImage?.originalWidth ? (backgroundImage.originalWidth * imageScale) : width}
+                    height={backgroundImage?.originalHeight ? (backgroundImage.originalHeight * imageScale) : height}
+                    x={backgroundImage?.originalWidth ? ((width - backgroundImage.originalWidth * imageScale) / 2) : 0}
+                    y={backgroundImage?.originalHeight ? ((height - backgroundImage.originalHeight * imageScale) / 2) : 0}
                     preserveAspectRatio="none"
                     opacity="0.5"
                   />

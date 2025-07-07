@@ -145,13 +145,15 @@ def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[Pa
     # Find minimum distance to any wall
     min_dist_to_wall = float('inf')
     
-    # Check distance to boundary walls
-    min_dist_to_wall = min(min_dist_to_wall, x, y, width - 1 - x, height - 1 - y)
-    
+    # Don't consider canvas boundaries as walls - only check internal walls
     # Check distance to internal walls
     for wall in walls:
         dist = abs(x - wall.x) + abs(y - wall.y)  # Manhattan distance
         min_dist_to_wall = min(min_dist_to_wall, dist)
+
+    # If no walls exist, return base weight
+    if min_dist_to_wall == float('inf'):
+        return base_weight
 
     # Weight calculation: closer to walls = lower weight
     # Weight decreases exponentially as we get closer to walls

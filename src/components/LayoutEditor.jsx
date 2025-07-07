@@ -154,13 +154,41 @@ export const LayoutEditor = () => {
         return;
       }
 
+      // Validate and clean machine data before sending to backend
+      const cleanedMachines = {};
+      Object.entries(machines).forEach(([key, machine]) => {
+        cleanedMachines[key] = {
+          ...machine,
+          x: isNaN(machine.x) ? 0 : Number(machine.x),
+          y: isNaN(machine.y) ? 0 : Number(machine.y),
+          width: machine.width !== undefined ? (isNaN(machine.width) ? 1 : Number(machine.width)) : undefined,
+          height: machine.height !== undefined ? (isNaN(machine.height) ? 1 : Number(machine.height)) : undefined
+        };
+      });
+
+      // Validate and clean walls, trays, and perforations
+      const cleanedWalls = walls.filter(w => !isNaN(w.x) && !isNaN(w.y)).map(w => ({
+        x: Number(w.x),
+        y: Number(w.y)
+      }));
+      
+      const cleanedTrays = trays.filter(t => !isNaN(t.x) && !isNaN(t.y)).map(t => ({
+        x: Number(t.x),
+        y: Number(t.y)
+      }));
+      
+      const cleanedPerforations = perforations.filter(p => !isNaN(p.x) && !isNaN(p.y)).map(p => ({
+        x: Number(p.x),
+        y: Number(p.y)
+      }));
+
       const requestData = {
         width: canvasConfig.width * 10,
         height: canvasConfig.height * 10,
-        walls,
-        trays,
-        perforations,
-        machines,
+        walls: cleanedWalls,
+        trays: cleanedTrays,
+        perforations: cleanedPerforations,
+        machines: cleanedMachines,
         cables: availableCables.map(cable => ({
           ...cable,
           // Ensure cableType is explicitly included
@@ -206,7 +234,7 @@ export const LayoutEditor = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [machines, walls, perforations, cables, importedCables, canvasConfig.width, canvasConfig.height, networks]);
+  }, [machines, walls, perforations, cables, importedCables, canvasConfig.width, canvasConfig.height, networks, trays]);
 
 
 
@@ -316,10 +344,41 @@ export const LayoutEditor = () => {
 
         console.log("Imported JSON:", importedData); // útil para depuración
 
-        setWalls(importedData.walls || []);
-        setTray(importedData.trays || []);
-        setPerforations(importedData.perforations || []);
-        setMachines(importedData.machines || {});
+        // Validate and clean walls, trays, and perforations
+        const cleanedWalls = (importedData.walls || []).filter(w => !isNaN(w.x) && !isNaN(w.y)).map(w => ({
+          x: Number(w.x),
+          y: Number(w.y)
+        }));
+        
+        const cleanedTrays = (importedData.trays || []).filter(t => !isNaN(t.x) && !isNaN(t.y)).map(t => ({
+          x: Number(t.x),
+          y: Number(t.y)
+        }));
+        
+        const cleanedPerforations = (importedData.perforations || []).filter(p => !isNaN(p.x) && !isNaN(p.y)).map(p => ({
+          x: Number(p.x),
+          y: Number(p.y)
+        }));
+
+        setWalls(cleanedWalls);
+        setTray(cleanedTrays);
+        setPerforations(cleanedPerforations);
+        
+        // Validate and clean machine data
+        const cleanedMachines = {};
+        if (importedData.machines) {
+          Object.entries(importedData.machines).forEach(([key, machine]) => {
+            cleanedMachines[key] = {
+              ...machine,
+              x: isNaN(machine.x) ? 0 : Number(machine.x),
+              y: isNaN(machine.y) ? 0 : Number(machine.y),
+              width: machine.width !== undefined ? (isNaN(machine.width) ? 1 : Number(machine.width)) : undefined,
+              height: machine.height !== undefined ? (isNaN(machine.height) ? 1 : Number(machine.height)) : undefined
+            };
+          });
+        }
+        setMachines(cleanedMachines);
+        
         if (importedData.allMachines) {
           const reconstructedAvailableMachines = Object.entries(importedData.allMachines).map(
             ([name, data]) => ({
@@ -353,27 +412,50 @@ export const LayoutEditor = () => {
         }
 
         // ✅ 2. Enviar al backend para procesar rutas
-        // Quitar allMachines antes de enviar al backend
-        const { canvasConfig, allMachines, ...dataForBackend } = importedData;
+        // Only send data that the backend expects in GridConfig
+        const backendData = {
+          width: canvasConfig?.width ? canvasConfig.width * 10 : (importedData.width || 1000),
+          height: canvasConfig?.height ? canvasConfig.height * 10 : (importedData.height || 1000),
+          walls: cleanedWalls,
+          trays: cleanedTrays,
+          perforations: cleanedPerforations,
+          machines: cleanedMachines,
+          cables: importedData.cables || [],
+          networks: importedData.networks || []
+        };
+
+        console.log("Sending to backend:", backendData);
 
         const response = await fetch('/api/optimize-paths', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(dataForBackend),
+          body: JSON.stringify(backendData),
         });
 
-        if (!response.ok) {
+        if (response.ok) {
+          const result = await response.json();
+          console.log("Backend response:", result);
+          
+          // ✅ 3. Aplicar configuración del canvas en el frontend
+          if (importedData.canvasConfig) {
+            setCanvasConfig(prevConfig => ({
+              ...prevConfig,
+              width: importedData.canvasConfig.width || prevConfig.width,
+              height: importedData.canvasConfig.height || prevConfig.height,
+              gridResolution: importedData.canvasConfig.gridResolution || prevConfig.gridResolution,
+              backgroundImage: importedData.canvasConfig.backgroundImage || null
+            }));
+          }
+          
+          // Use optimized data from backend if available, otherwise use cleaned data
+          const optimizedCables = result.cables || importedData.cables || [];
+          setCables(optimizedCables);
+          setNetworks(importedData.networks || []);
+          
+          alert('✅ Configuración importada correctamente');
+        } else {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
-
-        const result = await response.json();
-        console.log("Backend response:", result);
-
-        setBackendSections(result.sections || []);
-        setCableRoutes(result.routes || {});
-        setHananGrid(result.hananGrid || { xCoords: [], yCoords: [] });
-        setSteinerPoints(result.steinerPoints || []);
-
       } catch (err) {
         console.error("Error importing JSON:", err);
         setError(`Error importing JSON: ${err.message}`);
