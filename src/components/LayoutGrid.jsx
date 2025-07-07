@@ -232,44 +232,6 @@ export const LayoutGrid = ({
     const canvasContainerRef = useRef(null);
     const [isPanning, setIsPanning] = useState(false);
     const [panStart, setPanStart] = useState(null);
-useEffect(() => {
-  const handleMouseDown = (e) => {
-    if (e.button === 1) { // botón central
-      e.preventDefault();
-      setIsPanning(true);
-      setPanStart({ x: e.clientX, y: e.clientY });
-    }
-  };
-
-  const handleMouseMove = (e) => {
-    if (isPanning && panStart && canvasContainerRef.current) {
-      const dx = e.clientX - panStart.x;
-      const dy = e.clientY - panStart.y;
-
-      canvasContainerRef.current.scrollLeft -= dx;
-      canvasContainerRef.current.scrollTop -= dy;
-
-      setPanStart({ x: e.clientX, y: e.clientY });
-    }
-  };
-
-  const handleMouseUp = (e) => {
-    if (e.button === 1) {
-      setIsPanning(false);
-      setPanStart(null);
-    }
-  };
-
-  document.addEventListener('mousedown', handleMouseDown);
-  document.addEventListener('mousemove', handleMouseMove);
-  document.addEventListener('mouseup', handleMouseUp);
-
-  return () => {
-    document.removeEventListener('mousedown', handleMouseDown);
-    document.removeEventListener('mousemove', handleMouseMove);
-    document.removeEventListener('mouseup', handleMouseUp);
-  };
-}, [isPanning, panStart]);
 
     // Handle background image
     useEffect(() => {
@@ -331,16 +293,32 @@ useEffect(() => {
       if (inheritMode.active) return 'cursor-copy';
       if (selectedMachine) return 'cursor-crosshair';
       switch (activeMode) {
+        case EditorModes.PAN: return isPanning ? 'cursor-grabbing' : 'cursor-grab';
         case EditorModes.WALL: return 'cursor-crosshair';
         case EditorModes.TRAY: return 'cursor-crosshair';
-
         case EditorModes.PERFORATION: return 'cursor-cell';
         default: return 'cursor-default';
       }
-    }, [activeMode, selectedMachine, moveMode.active, inheritMode.active]);
+    }, [activeMode, selectedMachine, moveMode.active, inheritMode.active, isPanning]);
 
     const handleMouseDown = useCallback((e) => {
-      if (e.buttons !== 1) return;
+      // Handle panning with middle mouse button at any time
+      if (e.button === 1) { // Middle mouse button
+        e.preventDefault();
+        setIsPanning(true);
+        setPanStart({ x: e.clientX, y: e.clientY });
+        return;
+      }
+      
+      if (e.buttons !== 1) return; // Only handle left mouse button for other modes
+      
+      if (activeMode === EditorModes.PAN) {
+        e.preventDefault();
+        setIsPanning(true);
+        setPanStart({ x: e.clientX, y: e.clientY });
+        return;
+      }
+      
       if (activeMode === EditorModes.WALL) {
         e.preventDefault();
         const coords = getGridCoordinates(e);
@@ -365,7 +343,20 @@ useEffect(() => {
     }, [activeMode, getGridCoordinates]);
 
     const handleMouseMove = useCallback((e) => {
+      // Handle panning at any time when isPanning is true
+      if (isPanning && panStart && canvasContainerRef.current) {
+        const dx = e.clientX - panStart.x;
+        const dy = e.clientY - panStart.y;
+
+        canvasContainerRef.current.scrollLeft -= dx;
+        canvasContainerRef.current.scrollTop -= dy;
+
+        setPanStart({ x: e.clientX, y: e.clientY });
+        return;
+      }
+      
       if (e.buttons !== 1) return;
+      
       const coords = getGridCoordinates(e);
       if (isDragging && dragStart) {
         // Check if we've actually moved from the start position
@@ -387,9 +378,16 @@ useEffect(() => {
       }
       
       setDragPosition(coords);
-    }, [isDragging, dragStart, activeMode, getGridCoordinates, onWallAdd, onTrayAdd, onDelete]);
+    }, [isPanning, panStart, activeMode, isDragging, dragStart, getGridCoordinates, onWallAdd, onTrayAdd, onDelete]);
 
     const handleMouseUp = useCallback((e) => {
+      // Stop panning if we were panning
+      if (isPanning) {
+        setIsPanning(false);
+        setPanStart(null);
+        return;
+      }
+      
       if (isDragging && dragStart && hasDragged) {
         const coords = getGridCoordinates(e);
         if (coords && activeMode === EditorModes.WALL) {
@@ -410,7 +408,7 @@ useEffect(() => {
       if (draggedMachine) {
         setDraggedMachine(null);
       }
-    }, [isDragging, dragStart, activeMode, onWallAdd, onTrayAdd, onDelete, draggedMachine, hasDragged, getGridCoordinates]);
+    }, [isPanning, isDragging, dragStart, activeMode, onWallAdd, onTrayAdd, onDelete, draggedMachine, hasDragged, getGridCoordinates]);
 
     const handleClick = useCallback((e) => {
       const coords = getGridCoordinates(e);
