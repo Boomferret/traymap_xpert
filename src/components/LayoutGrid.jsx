@@ -8,6 +8,9 @@ import { Switch } from '@/components/ui/switch';
 import { InfoPanel } from './InfoPanel';
 import PropTypes from 'prop-types';
 
+
+
+
 // Add this function before the LayoutGrid component definition
 const preprocessBlockedGrid = (walls, perforations, gridSize) => {
   // Create a 2D array to represent the grid
@@ -226,6 +229,48 @@ export const LayoutGrid = ({
     });
     const [hasDragged, setHasDragged] = useState(false);
 
+    const canvasContainerRef = useRef(null);
+    const [isPanning, setIsPanning] = useState(false);
+    const [panStart, setPanStart] = useState(null);
+useEffect(() => {
+  const handleMouseDown = (e) => {
+    if (e.button === 1) { // botón central
+      e.preventDefault();
+      setIsPanning(true);
+      setPanStart({ x: e.clientX, y: e.clientY });
+    }
+  };
+
+  const handleMouseMove = (e) => {
+    if (isPanning && panStart && canvasContainerRef.current) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+
+      canvasContainerRef.current.scrollLeft -= dx;
+      canvasContainerRef.current.scrollTop -= dy;
+
+      setPanStart({ x: e.clientX, y: e.clientY });
+    }
+  };
+
+  const handleMouseUp = (e) => {
+    if (e.button === 1) {
+      setIsPanning(false);
+      setPanStart(null);
+    }
+  };
+
+  document.addEventListener('mousedown', handleMouseDown);
+  document.addEventListener('mousemove', handleMouseMove);
+  document.addEventListener('mouseup', handleMouseUp);
+
+  return () => {
+    document.removeEventListener('mousedown', handleMouseDown);
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleMouseUp);
+  };
+}, [isPanning, panStart]);
+
     // Handle background image
     useEffect(() => {
       // Handle both object format {url: '...', originalWidth: ..., originalHeight: ...} 
@@ -295,6 +340,7 @@ export const LayoutGrid = ({
     }, [activeMode, selectedMachine, moveMode.active, inheritMode.active]);
 
     const handleMouseDown = useCallback((e) => {
+      if (e.buttons !== 1) return;
       if (activeMode === EditorModes.WALL) {
         e.preventDefault();
         const coords = getGridCoordinates(e);
@@ -319,6 +365,7 @@ export const LayoutGrid = ({
     }, [activeMode, getGridCoordinates]);
 
     const handleMouseMove = useCallback((e) => {
+      if (e.buttons !== 1) return;
       const coords = getGridCoordinates(e);
       if (isDragging && dragStart) {
         // Check if we've actually moved from the start position
@@ -1075,15 +1122,17 @@ export const LayoutGrid = ({
             </div>
 
             {/* Canvas Container */}
-            <div 
-              className="relative bg-white rounded-lg shadow-sm mx-auto"
-              style={{ 
-                width: `${width}px`, 
-                height: `${height}px`,
-                minWidth: `${width}px`
-              }}
-              onMouseLeave={handleMouseLeave}
-            >
+                          <div
+                ref={canvasContainerRef}
+                className="relative bg-white rounded-lg shadow-sm mx-auto overflow-auto"
+                style={{
+                  maxWidth: '1200px',
+                  maxHeight: '1200px',
+                  border: '1px solid #ccc'
+                }}
+                onMouseLeave={handleMouseLeave}
+              >
+
               <svg
                 ref={svgRef}
                 width={width}

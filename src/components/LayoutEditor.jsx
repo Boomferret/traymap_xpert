@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { EditorModes } from '@/constants/editorModes';
 import { LayoutGrid } from './LayoutGrid';
-import { Square as Wall, CircleDot, Plus, X, GripVertical, PowerOff, Wrench, Truck, Tractor, Download, Upload, Hand } from 'lucide-react';
+import { Square as Wall, CircleDot, Plus, X, GripVertical, PowerOff, Wrench, Truck, Tractor, Download, Upload, Squirrel} from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -1441,7 +1441,7 @@ export const LayoutEditor = () => {
               title="Pan Canvas"
               className="w-10 h-10"
             >
-              <Hand className="h-5 w-5" />
+              <Squirrel className="h-5 w-5" />
             </Button>
             <Button
               variant={editorMode === EditorModes.WALL ? "secondary" : "outline"}
