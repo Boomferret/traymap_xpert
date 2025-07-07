@@ -3,5 +3,6 @@ export const EditorModes = {
     PERFORATION: 'PERFORATION',
     MACHINE: 'MACHINE',
     TRAY: 'TRAY',
-    DELETE:'DELETE'    
+    DELETE:'DELETE',
+    PAN: 'PAN'    
   };

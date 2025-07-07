@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { EditorModes } from '@/constants/editorModes';
 import { LayoutGrid } from './LayoutGrid';
-import { Square as Wall, CircleDot, Plus, X, GripVertical, PowerOff, Wrench, Truck, Tractor, Download, Upload } from 'lucide-react';
+import { Square as Wall, CircleDot, Plus, X, GripVertical, PowerOff, Wrench, Truck, Tractor, Download, Upload, Hand } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -1398,7 +1398,7 @@ export const LayoutEditor = () => {
 
       <div className="flex gap-4">
         <Card className="w-64 p-4 flex flex-col">
-          <div className="flex gap-2 mb-4 pb-4 border-b">
+          <div className="flex gap-2 mb-4 pb-4 border-b justify-center">
             <Button
               onClick={handleExport}
               variant="outline"
@@ -1431,6 +1431,18 @@ export const LayoutEditor = () => {
           </div>
 
           <div className="flex gap-2 mb-4 pb-4 border-b">
+            <Button
+              variant={editorMode === EditorModes.PAN ? "secondary" : "outline"}
+              size="icon"
+              onClick={() => {
+                setEditorMode(EditorModes.PAN);
+                setSelectedMachine(null);
+              }}
+              title="Pan Canvas"
+              className="w-10 h-10"
+            >
+              <Hand className="h-5 w-5" />
+            </Button>
             <Button
               variant={editorMode === EditorModes.WALL ? "secondary" : "outline"}
               size="icon"
