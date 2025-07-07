@@ -1122,7 +1122,7 @@ export const LayoutEditor = () => {
           </div>
 
           <div className="text-sm font-medium mb-2">Available Machines</div>
-          <div className="flex-1 min-h-0 border rounded-md p-2 overflow-y-auto">
+          <div className="flex-1 min-h-0 border rounded-md p-2 overflow-y-auto" style={{ maxHeight: '1200px' }}>
             <div className="grid gap-2">
               {availableMachines.map((machine) => (
                 <div
