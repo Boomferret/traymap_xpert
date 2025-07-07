@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { EditorModes } from '@/constants/editorModes';
 import { LayoutGrid } from './LayoutGrid';
-import { Square as Wall, CircleDot, Plus, X, GripVertical, PowerOff, Wrench, Truck, Tractor } from 'lucide-react';
+import { Square as Wall, CircleDot, Plus, X, GripVertical, PowerOff, Wrench, Truck, Tractor, Download, Upload } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -131,16 +131,119 @@ export const LayoutEditor = () => {
   const [machineUpdateCounter, setMachineUpdateCounter] = useState(0);
   //uses on the use efect to optimize the number of execution not refresishing when you are dragging
   const [needsOptimization, setNeedsOptimization] = useState(false);
+  
+  // Add machine search state
+  const [machineSearchTerm, setMachineSearchTerm] = useState('');
+  
+  // Add AbortController ref to track current request
+  const abortControllerRef = useRef(null);
 
   const markForOptimization = useCallback(() => {
     setNeedsOptimization(true);
   }, []);
 
+  // Filter available machines based on search term
+  const filteredAvailableMachines = useMemo(() => {
+    if (!machineSearchTerm.trim()) {
+      return availableMachines;
+    }
+    
+    const searchLower = machineSearchTerm.toLowerCase();
+    return availableMachines.filter(machine => 
+      machine.name.toLowerCase().includes(searchLower) ||
+      (machine.description && machine.description.toLowerCase().includes(searchLower))
+    );
+  }, [availableMachines, machineSearchTerm]);
+
   const fetchOptimalPaths = useCallback(async () => {
+    const startTime = Date.now();
+    const requestId = Math.random().toString(36).substr(2, 9);
+    
     try {
+      // Cancel any ongoing request
+      if (abortControllerRef.current) {
+        console.log(`🚫 [${new Date().toLocaleTimeString()}] BACKEND INTERRUPTED: Cancelling previous request to start new one (Request ID: ${requestId})`);
+        abortControllerRef.current.abort();
+      }
+      
+      // Create new AbortController for this request
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      
+      console.log(`🚀 [${new Date().toLocaleTimeString()}] BACKEND REQUEST STARTED: Optimization request initiated (Request ID: ${requestId})`);
+      
       setIsLoading(true);
+      setError(''); // Clear any previous errors
+      
       // Get all available cables
       const allCables = importedCables.length > 0 ? importedCables : cables;
+
+      // Log detailed cable information
+      console.group(`📋 [${new Date().toLocaleTimeString()}] CABLE ANALYSIS (Request ID: ${requestId})`);
+      console.log(`Total cables available: ${allCables.length}`);
+      
+      // Analyze cables by source/target machine existence
+      const cableAnalysis = {
+        total: allCables.length,
+        routable: 0,
+        missingSource: 0,
+        missingTarget: 0,
+        missingBoth: 0,
+        byNetwork: {},
+        byFunction: {}
+      };
+
+      allCables.forEach(cable => {
+        const sourceExists = machines.hasOwnProperty(cable.source);
+        const targetExists = machines.hasOwnProperty(cable.target);
+        
+        if (sourceExists && targetExists) {
+          cableAnalysis.routable++;
+        } else if (!sourceExists && !targetExists) {
+          cableAnalysis.missingBoth++;
+        } else if (!sourceExists) {
+          cableAnalysis.missingSource++;
+        } else {
+          cableAnalysis.missingTarget++;
+        }
+
+        // Group by network
+        const network = cable.network || 'Unknown';
+        cableAnalysis.byNetwork[network] = (cableAnalysis.byNetwork[network] || 0) + 1;
+
+        // Group by function
+        const func = cable.cableFunction || 'Unknown';
+        cableAnalysis.byFunction[func] = (cableAnalysis.byFunction[func] || 0) + 1;
+      });
+
+      console.log(`📊 Cable Routing Analysis:`, cableAnalysis);
+      
+      // Log specific unroutable cables if any
+      if (cableAnalysis.missingSource > 0 || cableAnalysis.missingTarget > 0 || cableAnalysis.missingBoth > 0) {
+        console.group(`⚠️ Unroutable Cables:`);
+        
+        allCables.forEach(cable => {
+          const sourceExists = machines.hasOwnProperty(cable.source);
+          const targetExists = machines.hasOwnProperty(cable.target);
+          
+          if (!sourceExists || !targetExists) {
+            const issues = [];
+            if (!sourceExists) issues.push(`Missing source: ${cable.source}`);
+            if (!targetExists) issues.push(`Missing target: ${cable.target}`);
+            
+            console.log(`❌ ${cable.cableLabel || 'Unnamed'}: ${issues.join(', ')}`, {
+              source: cable.source,
+              target: cable.target,
+              network: cable.network,
+              function: cable.cableFunction
+            });
+          }
+        });
+        
+        console.groupEnd();
+      }
+      
+      console.groupEnd();
 
       // Filter cables to only include those where both machines are placed
       const availableCables = allCables.filter(cable => {
@@ -149,10 +252,60 @@ export const LayoutEditor = () => {
         return sourceExists && targetExists;
       });
 
+      // Log machine analysis
+      console.group(`🏭 [${new Date().toLocaleTimeString()}] MACHINE ANALYSIS (Request ID: ${requestId})`);
+      console.log(`Total machines placed: ${Object.keys(machines).length}`);
+      
+      Object.entries(machines).forEach(([name, machine]) => {
+        const incomingCables = availableCables.filter(c => c.target === name).length;
+        const outgoingCables = availableCables.filter(c => c.source === name).length;
+        const totalCables = incomingCables + outgoingCables;
+        
+        console.log(`🏭 ${name}:`, {
+          position: `(${machine.x}, ${machine.y})`,
+          incomingCables,
+          outgoingCables,
+          totalCables,
+          description: machine.description || 'No description',
+          merged: machine.mergedHistory ? Object.keys(machine.mergedHistory).length > 1 : false
+        });
+      });
+      console.groupEnd();
+
+      // Log layout constraints
+      console.group(`🏗️ [${new Date().toLocaleTimeString()}] LAYOUT CONSTRAINTS (Request ID: ${requestId})`);
+      console.log(`Canvas size: ${canvasConfig.width * 10} x ${canvasConfig.height * 10} cells`);
+      console.log(`Walls: ${walls.length} blocks`);
+      console.log(`Trays: ${trays.length} blocks`);
+      console.log(`Perforations: ${perforations.length} holes`);
+      
+      // Calculate layout density
+      const totalCells = (canvasConfig.width * 10) * (canvasConfig.height * 10);
+      const blockedCells = walls.length;
+      const blockagePercentage = ((blockedCells / totalCells) * 100).toFixed(1);
+      
+      console.log(`Layout density: ${blockagePercentage}% blocked`);
+      console.groupEnd();
+
       // Only proceed if we have cables to route
       if (availableCables.length === 0) {
+        console.log(`⚠️ [${new Date().toLocaleTimeString()}] BACKEND REQUEST SKIPPED: No cables to route (Request ID: ${requestId})`);
+        console.log(`💡 Tip: Ensure machines are placed for cable endpoints`);
         return;
       }
+
+      // Log network analysis
+      console.group(`🌐 [${new Date().toLocaleTimeString()}] NETWORK ANALYSIS (Request ID: ${requestId})`);
+      networks.forEach(network => {
+        const networkCables = availableCables.filter(c => c.network === network.name);
+        console.log(`🌐 ${network.name}:`, {
+          cables: networkCables.length,
+          functions: network.functions,
+          color: network.color,
+          visible: networkVisibility[network.name] !== false
+        });
+      });
+      console.groupEnd();
 
       // Validate and clean machine data before sending to backend
       const cleanedMachines = {};
@@ -204,33 +357,146 @@ export const LayoutEditor = () => {
           functions: network.functions
         }))
       };
-      console.log("Sending data to backend:", requestData);
+      
+      console.log(`📤 [${new Date().toLocaleTimeString()}] BACKEND REQUEST DATA: Sending ${availableCables.length} cables, ${Object.keys(cleanedMachines).length} machines (Request ID: ${requestId})`, {
+        cables: availableCables.length,
+        machines: Object.keys(cleanedMachines).length,
+        walls: cleanedWalls.length,
+        trays: cleanedTrays.length,
+        perforations: cleanedPerforations.length
+      });
 
       const response = await fetch('/api/optimize-paths', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestData)
+        body: JSON.stringify(requestData),
+        signal: controller.signal // Add abort signal to the request
       });
+
+      // Check if the request was aborted
+      if (controller.signal.aborted) {
+        const duration = Date.now() - startTime;
+        console.log(`🚫 [${new Date().toLocaleTimeString()}] BACKEND INTERRUPTED: Request was cancelled before response (Duration: ${duration}ms, Request ID: ${requestId})`);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
-      console.log("Received data from backend:", data);
-      console.log("Sample section details:", data.sections[0]?.details);
-      console.log("Sample cable details:", Object.values(data.sections[0]?.details)[0]);
+      
+      // Double-check if request was aborted after receiving response
+      if (controller.signal.aborted) {
+        const duration = Date.now() - startTime;
+        console.log(`🚫 [${new Date().toLocaleTimeString()}] BACKEND INTERRUPTED: Request was cancelled after receiving response (Duration: ${duration}ms, Request ID: ${requestId})`);
+        return;
+      }
+      
+      const duration = Date.now() - startTime;
+
+      // Log detailed response analysis
+      console.group(`✅ [${new Date().toLocaleTimeString()}] BACKEND COMPLETED: Optimization successful (Duration: ${duration}ms, Request ID: ${requestId})`);
+      
+      console.log(`📊 Optimization Results:`, {
+        sections: data.sections?.length || 0,
+        steinerPoints: data.steinerPoints?.length || 0,
+        duration: `${duration}ms`,
+        hananGridPoints: {
+          xCoords: data.hananGrid?.xCoords?.length || 0,
+          yCoords: data.hananGrid?.yCoords?.length || 0
+        }
+      });
+
+      // Analyze sections by network
+      if (data.sections && data.sections.length > 0) {
+        console.group(`🛤️ Route Sections Analysis:`);
+        
+        const sectionsByNetwork = {};
+        let totalRouteLength = 0;
+        
+        data.sections.forEach((section, index) => {
+          const network = section.network || 'Unknown';
+          if (!sectionsByNetwork[network]) {
+            sectionsByNetwork[network] = [];
+          }
+          sectionsByNetwork[network].push(section);
+          
+          // Calculate section length
+          let sectionLength = 0;
+          for (let i = 1; i < section.points.length; i++) {
+            const prev = section.points[i-1];
+            const curr = section.points[i];
+            sectionLength += Math.sqrt(Math.pow(curr.x - prev.x, 2) + Math.pow(curr.y - prev.y, 2));
+          }
+          totalRouteLength += sectionLength;
+          
+          console.log(`🛤️ Section ${index + 1}:`, {
+            network: section.network,
+            cables: Array.isArray(section.cables) ? section.cables.length : section.cables.size,
+            points: section.points.length,
+            length: `${sectionLength.toFixed(1)} cells`,
+            strokeWidth: section.strokeWidth
+          });
+        });
+        
+        console.log(`📏 Total route length: ${totalRouteLength.toFixed(1)} cells`);
+        console.log(`🌐 Sections by network:`, Object.keys(sectionsByNetwork).map(network => ({
+          network,
+          sections: sectionsByNetwork[network].length
+        })));
+        
+        console.groupEnd();
+      }
+
+      // Log Steiner points if any
+      if (data.steinerPoints && data.steinerPoints.length > 0) {
+        console.group(`⭐ Steiner Points (Junctions):`);
+        data.steinerPoints.forEach((point, index) => {
+          console.log(`⭐ Junction ${index + 1}: (${point.x}, ${point.y})`);
+        });
+        console.groupEnd();
+      }
+
+      // Log debug info if available
+      if (data.debug_info) {
+        console.group(`🔍 Backend Debug Information:`);
+        console.log(`📊 Algorithm Performance:`, {
+          initialMSTLength: data.debug_info.initial_mst_length?.toFixed(1),
+          finalLength: data.debug_info.final_length?.toFixed(1),
+          improvement: `${data.debug_info.improvement_percentage?.toFixed(1)}%`,
+          steinerPoints: data.debug_info.num_steiner_points,
+          sections: data.debug_info.num_sections,
+          componentsAnalyzed: data.debug_info.num_components_tried,
+          componentsUsed: data.debug_info.num_components_used,
+          optimizationPasses: data.debug_info.passes_used
+        });
+        console.groupEnd();
+      }
+
+      console.groupEnd();
 
       if (data.sections) {
         setBackendSections(data.sections);
         setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
         setSteinerPoints(data.steinerPoints || []);
       }
+      
+      // Clear the controller reference on successful completion
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     } catch (error) {
-      console.error("Error fetching optimal paths:", error);
-      setError(`Error fetching optimal paths: ${error.message}`);
+      const duration = Date.now() - startTime;
+      // Only log errors if the request wasn't aborted
+      if (error.name !== 'AbortError') {
+        console.error(`❌ [${new Date().toLocaleTimeString()}] BACKEND ERROR: Request failed (Duration: ${duration}ms, Request ID: ${requestId})`, error);
+        setError(`Error fetching optimal paths: ${error.message}`);
+      } else {
+        console.log(`🚫 [${new Date().toLocaleTimeString()}] BACKEND INTERRUPTED: Request was manually cancelled or aborted (Duration: ${duration}ms, Request ID: ${requestId})`, error.message);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -975,6 +1241,15 @@ export const LayoutEditor = () => {
     setNeedsOptimization(false);
   }, [needsOptimization, fetchOptimalPaths]);
 
+  // Cleanup effect to cancel ongoing requests on unmount
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
 
   return (
     <div className="flex flex-col h-full gap-4">
@@ -992,16 +1267,85 @@ export const LayoutEditor = () => {
           className="hidden"
           id="cable-import"
         />
-        <Button onClick={() => document.getElementById('cable-import').click()}>
-          Import Cable List
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => setShowCableList(!showCableList)}
-        >
-          {showCableList ? 'Hide' : 'Show'} Cable List
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={() => document.getElementById('cable-import').click()}>
+            Import Cable List
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setShowCableList(!showCableList)}
+          >
+            {showCableList ? 'Hide' : 'Show'} Cable List
+          </Button>
+        </div>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={fetchOptimalPaths}
+            disabled={isLoading || Object.keys(machines).length < 2}
+            className="flex items-center gap-2"
+          >
+            {isLoading ? (
+              <div className="animate-spin rounded-full h-4 w-4 border-2 border-gray-400 border-t-transparent"></div>
+            ) : (
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 12c0 1-1 3-3 3s-3-2-3-3 1-3 3-3 3 2 3 3"/>
+                <path d="M3 12c0-1 1-3 3-3s3 2 3 3-1 3-3 3-3-2-3-3"/>
+                <path d="M10.5 9.5 8 12l2.5 2.5"/>
+                <path d="m13.5 14.5 2.5-2.5-2.5-2.5"/>
+              </svg>
+            )}
+            Recalculate Paths
+          </Button>
+        </div>
       </div>
+
+      {/* Loading indicator with cancel option */}
+      {isLoading && (
+        <Card className="p-3 bg-blue-50 border-blue-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></div>
+              <span className="text-sm text-blue-700 font-medium">
+                Calculating optimal cable paths...
+              </span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (abortControllerRef.current) {
+                  console.log(`🛑 [${new Date().toLocaleTimeString()}] USER CANCELLATION: Backend calculation manually cancelled by user`);
+                  abortControllerRef.current.abort();
+                  abortControllerRef.current = null;
+                } else {
+                  console.log(`⚠️ [${new Date().toLocaleTimeString()}] CANCEL ATTEMPT: No active request to cancel`);
+                }
+              }}
+              className="text-blue-600 border-blue-300 hover:bg-blue-100"
+            >
+              Cancel
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Error indicator */}
+      {error && (
+        <Card className="p-3 bg-red-50 border-red-200">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-red-700">{error}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setError('')}
+              className="text-red-600 border-red-300 hover:bg-red-100"
+            >
+              Dismiss
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {showCableList && importedCables.length > 0 && (
         <Card className="p-4">
@@ -1054,12 +1398,28 @@ export const LayoutEditor = () => {
 
       <div className="flex gap-4">
         <Card className="w-64 p-4 flex flex-col">
-          <div className="flex gap-4 mt-4">
-            <button onClick={handleExport}>Exportar JSON</button>
+          <div className="flex gap-2 mb-4 pb-4 border-b">
+            <Button
+              onClick={handleExport}
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-2"
+              title="Export layout to JSON"
+            >
+              <Download className="h-4 w-4" />
+              Export
+            </Button>
 
-            <button onClick={() => fileInputRef.current.click()}>
-              Importar JSON
-            </button>
+            <Button
+              onClick={() => fileInputRef.current.click()}
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-2"
+              title="Import layout from JSON"
+            >
+              <Upload className="h-4 w-4" />
+              Import
+            </Button>
 
             <input
               type="file"
@@ -1122,9 +1482,44 @@ export const LayoutEditor = () => {
           </div>
 
           <div className="text-sm font-medium mb-2">Available Machines</div>
+          
+          {/* Machine search input */}
+          <div className="mb-3">
+            <div className="relative">
+              <Input
+                type="text"
+                placeholder="Search machines by name or description..."
+                value={machineSearchTerm}
+                onChange={(e) => setMachineSearchTerm(e.target.value)}
+                className="text-sm pl-8 pr-8"
+              />
+              <svg
+                className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                />
+              </svg>
+              {machineSearchTerm && (
+                <button
+                  onClick={() => setMachineSearchTerm('')}
+                  className="absolute right-2.5 top-2.5 h-4 w-4 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          </div>
+          
           <div className="flex-1 min-h-0 border rounded-md p-2 overflow-y-auto" style={{ maxHeight: '1200px' }}>
             <div className="grid gap-2">
-              {availableMachines.map((machine) => (
+              {filteredAvailableMachines.map((machine) => (
                 <div
                   key={machine.name}
                   onClick={() => {
@@ -1156,9 +1551,12 @@ export const LayoutEditor = () => {
                   </div>
                 </div>
               ))}
-              {availableMachines.length === 0 && (
+              {filteredAvailableMachines.length === 0 && (
                 <div className="text-sm text-gray-500 p-2 text-center">
-                  All machines have been placed
+                  {machineSearchTerm.trim() 
+                    ? `No machines found matching "${machineSearchTerm}"`
+                    : "All machines have been placed"
+                  }
                 </div>
               )}
             </div>

@@ -653,10 +653,20 @@ def convert_to_sections(
     3) For each MST edge path, we split at steiner points to form sub-segments.
     4) For each sub-segment, see which cables overlap it => form a Section.
     """
+    print(f"\n=== convert_to_sections DEBUG ===")
+    print(f"📥 Input: {len(cables)} cables, {len(networks)} networks, {len(final_mst)} MST edges")
+    
+    # Debug networks
+    print(f"📊 Networks received:")
+    for i, net in enumerate(networks):
+        functions = net.get("functions", [])
+        print(f"  Network {i+1}: '{net.get('name')}' → functions: {functions}")
+    
     # 1) MST adjacency
     mst_adjacency = build_mst_adjacency(final_mst, pair_routes)
     # 2) Steiner points
     steiner_points_set = detect_steiner_points(mst_adjacency)
+    print(f"🔹 Detected {len(steiner_points_set)} Steiner points")
 
     # We'll soon need Dijkstra-based cable routes:
     cable_routes = {}
@@ -679,32 +689,70 @@ def convert_to_sections(
     for net in networks:
         for func in net.get("functions", []):
             network_lookup[func] = net["name"]
+    
+    print(f"🔍 Network lookup table built: {len(network_lookup)} function mappings")
+    for func, net_name in network_lookup.items():
+        print(f"  '{func}' → '{net_name}'")
 
     # Group cables by network
     grouped = {}
+    cables_without_network = []
+    
+    print(f"🔗 Processing {len(cables)} cables for network grouping:")
     for c in cables:
-        net_name = network_lookup.get(c.cableFunction)
+        cable_id = c.cableLabel or f"{c.source}-{c.target}"
+        cable_func = c.cableFunction
+        net_name = network_lookup.get(cable_func)
+        
+        print(f"  📌 Cable '{cable_id}': function='{cable_func}' → network='{net_name}'")
+        
         if not net_name:
+            cables_without_network.append((cable_id, cable_func))
+            print(f"    ⚠️  SKIPPED: No network found for function '{cable_func}'")
             continue
+            
         grouped.setdefault(net_name, []).append(c)
+        print(f"    ✅ Added to network '{net_name}'")
+
+    print(f"\n📈 Network grouping results:")
+    print(f"  🎯 {len(grouped)} networks with cables:")
+    for net_name, net_cables in grouped.items():
+        cable_ids = [c.cableLabel or f"{c.source}-{c.target}" for c in net_cables]
+        print(f"    '{net_name}': {len(net_cables)} cables → {cable_ids}")
+    
+    if cables_without_network:
+        print(f"  ❌ {len(cables_without_network)} cables WITHOUT networks:")
+        for cable_id, func in cables_without_network:
+            print(f"    '{cable_id}' (function: '{func}')")
 
     sections = []
 
     # 3) For each MST edge, get Dijkstra path & split:
+    total_mst_segments = 0
+    total_cable_overlaps = 0
+    
+    print(f"\n🧩 Processing MST edges for section creation:")
     for net_name, net_cables in grouped.items():
-        for (u, v) in final_mst:
+        print(f"  🌐 Processing network '{net_name}' with {len(net_cables)} cables")
+        
+        for edge_idx, (u, v) in enumerate(final_mst):
             dist_uv, path_uv = pair_routes.get((u,v), (0.0, []))
             if not path_uv:
+                print(f"    ⚠️  Edge {edge_idx+1}: No path found for {u} → {v}")
                 continue
+
+            print(f"    🔗 Edge {edge_idx+1}: {u} → {v} (path length: {len(path_uv)} points)")
 
             # Split the Dijkstra path at internal Steiner points
             sub_paths = split_path_at_steiner_points(path_uv, steiner_points_set)
-            # sub_paths is a list of smaller [p1->...->pX] segments
+            total_mst_segments += len(sub_paths)
+            print(f"      📏 Split into {len(sub_paths)} sub-segments")
 
             # 4) For each sub-segment, see if it overlaps with cables in net_cables
-            for seg in sub_paths:
+            for seg_idx, seg in enumerate(sub_paths):
                 pyd_points = [Point(x=p.x, y=p.y) for p in seg]
                 if len(pyd_points) < 2:
+                    print(f"        ⏭️  Sub-segment {seg_idx+1}: Too short ({len(pyd_points)} points)")
                     continue
 
                 used_cables = set()
@@ -712,12 +760,15 @@ def convert_to_sections(
 
                 # naive intersection check
                 seg_set = {(p.x, p.y) for p in pyd_points}
+                print(f"        🔍 Sub-segment {seg_idx+1}: Checking overlap with {len(net_cables)} cables")
+                
                 for c in net_cables:
                     cid = c.cableLabel or f"{c.source}-{c.target}"
                     route = cable_routes[cid]
                     route_set = {(rp.x, rp.y) for rp in route}
                     # If there's an overlap of 2+ points => consider used
                     inter = seg_set.intersection(route_set)
+                    
                     if len(inter) >= 2:
                         used_cables.add(cid)
                         cable_details[cid] = CableDetail(
@@ -733,6 +784,10 @@ def convert_to_sections(
                             routeLength=cable_lengths[cid],
                             length=getattr(c, 'length', None)
                         )
+                        total_cable_overlaps += 1
+                        print(f"          ✅ Cable '{cid}': {len(inter)} overlapping points")
+                    else:
+                        print(f"          ❌ Cable '{cid}': Only {len(inter)} overlapping points (need ≥2)")
 
                 if used_cables:
                     sec = Section(
@@ -743,6 +798,20 @@ def convert_to_sections(
                         strokeWidth=4 + min(len(used_cables)*0.75, 15)
                     )
                     sections.append(sec)
+                    print(f"          🎯 SECTION CREATED: {len(used_cables)} cables, {len(pyd_points)} points")
+                else:
+                    print(f"          ⭕ No cables overlap this sub-segment")
+
+    print(f"\n📋 FINAL RESULTS:")
+    print(f"  📦 Created {len(sections)} sections")
+    print(f"  🧩 Processed {total_mst_segments} MST sub-segments") 
+    print(f"  🔗 Found {total_cable_overlaps} cable overlaps")
+    print(f"  ❌ {len(cables_without_network)} cables skipped (no network)")
+    
+    if len(sections) == 0 and len(cables) > 0:
+        print(f"  🚨 WARNING: No sections created despite having {len(cables)} cables!")
+        if len(cables_without_network) == len(cables):
+            print(f"  💡 LIKELY CAUSE: All cables skipped due to missing network mappings")
 
     return sections
 
