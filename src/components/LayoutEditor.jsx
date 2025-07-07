@@ -298,6 +298,7 @@ export const LayoutEditor = () => {
         trays,
         perforations,
         machines,
+        availableMachines,
         cables: importedCables.length > 0 ? importedCables : cables,
         networks,
         canvasConfig: {
@@ -379,7 +380,12 @@ export const LayoutEditor = () => {
         }
         setMachines(cleanedMachines);
         
-        if (importedData.allMachines) {
+        // Restore available machines list
+        if (importedData.availableMachines) {
+          // Direct restore from new export format
+          setAvailableMachines(importedData.availableMachines);
+        } else if (importedData.allMachines) {
+          // Legacy format support
           const reconstructedAvailableMachines = Object.entries(importedData.allMachines).map(
             ([name, data]) => ({
               name,
@@ -387,6 +393,20 @@ export const LayoutEditor = () => {
             })
           );
           setAvailableMachines(reconstructedAvailableMachines);
+        } else if (importedData.cables && importedData.cables.length > 0) {
+          // Reconstruct from cables if available machines list is missing
+          const uniqueMachineNames = new Set();
+          importedData.cables.forEach(cable => {
+            if (cable.source) uniqueMachineNames.add(cable.source);
+            if (cable.target) uniqueMachineNames.add(cable.target);
+          });
+          
+          const reconstructedMachines = Array.from(uniqueMachineNames).map(name => ({
+            name,
+            description: importedData.cables.find(c => c.source === name)?.sourceLocation ||
+                        importedData.cables.find(c => c.target === name)?.targetLocation || ''
+          }));
+          setAvailableMachines(reconstructedMachines);
         }
 
         setCables(importedData.cables || []);
@@ -397,11 +417,6 @@ export const LayoutEditor = () => {
         if (importedData.canvasConfig) {
           setCanvasConfig(importedData.canvasConfig);
         }
-        const uniqueMachines = new Set();
-        cables.forEach(cable => {
-          if (cable.source) uniqueMachines.add(cable.source);
-          if (cable.target) uniqueMachines.add(cable.target);
-        });
 
         // Si tienes un estado para canvasConfig (no mostrado, pero implícito en tu `requestData`)
         if (importedData.width && importedData.height) {
