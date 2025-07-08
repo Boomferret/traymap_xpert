@@ -1833,5 +1833,5 @@ LayoutGrid.propTypes = {
 
 // Add display name to the main component
 LayoutGrid.displayName = 'LayoutGrid';
-
+//
 export default LayoutGrid;
