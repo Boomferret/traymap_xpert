@@ -191,7 +191,13 @@ export const LayoutGrid = ({
     hananGrid = { xCoords: [], yCoords: [] },
     hoveredNetwork,
     onNetworkHover,
-    steinerPoints = []
+    steinerPoints = [],
+    // New props for external info panel control
+    hoveredInfo,
+    selectedElement,
+    onElementSelect,
+    onCableHover,
+    hoveredCable = null
 }) => {
     const [isDragging, setIsDragging] = useState(false);
     const [dragPosition, setDragPosition] = useState(null);
@@ -199,8 +205,6 @@ export const LayoutGrid = ({
     const [selectedSectionCables, setSelectedSectionCables] = useState([]);
     const [imageUrl, setImageUrl] = useState(null);
     const [hoveredElement, setHoveredElement] = useState(null);
-    const [selectedElement, setSelectedElement] = useState(null);
-    const [hoveredCable, setHoveredCable] = useState(null);
     const [currentSourceCables, setCurrentSourceCables] = useState([]);
     const [currentTargetCables, setCurrentTargetCables] = useState([]);
     const svgRef = useRef(null);
@@ -233,6 +237,119 @@ export const LayoutGrid = ({
     const [isPanning, setIsPanning] = useState(false);
     const [panStart, setPanStart] = useState(null);
 
+    // Enhanced panning effects
+    useEffect(() => {
+      const svg = svgRef.current;
+      const container = canvasContainerRef.current;
+    
+      if (!svg || !container) return;
+    
+      // Save initial viewBox dynamically on mount
+      const [initialX, initialY, initialW, initialH] = svg
+        .getAttribute("viewBox")
+        .split(" ")
+        .map(Number);
+    
+      const initialViewBox = {
+        x: initialX,
+        y: initialY,
+        width: initialW,
+        height: initialH,
+      };
+    
+      let lastClickTime = 0;
+    
+      const handleMiddleClick = (e) => {
+        if (e.button !== 1) return; // only middle button
+    
+        const now = Date.now();
+        const timeSinceLastClick = now - lastClickTime;
+        lastClickTime = now;
+    
+        if (timeSinceLastClick < 300) {
+          // Middle mouse double-click detected - reset view
+          svg.setAttribute(
+            "viewBox",
+            `${initialViewBox.x} ${initialViewBox.y} ${initialViewBox.width} ${initialViewBox.height}`
+          );
+          container.scrollLeft = 0;
+          container.scrollTop = 0;
+        }
+      };
+    
+      document.addEventListener("mousedown", handleMiddleClick);
+    
+      return () => {
+        document.removeEventListener("mousedown", handleMiddleClick);
+      };
+    }, []);
+    
+    useEffect(() => {
+      const handleMouseDown = (e) => {
+        if (e.button === 1) {
+          e.preventDefault(); // prevent autoscroll
+          setIsPanning(true);
+          setPanStart({ x: e.clientX, y: e.clientY });
+        }
+      };
+    
+      const handleMouseMove = (e) => {
+        if (isPanning && panStart && canvasContainerRef.current) {
+          const dx = e.clientX - panStart.x;
+          const dy = e.clientY - panStart.y;
+    
+          // Get current scroll position
+          const currentScrollLeft = canvasContainerRef.current.scrollLeft;
+          const currentScrollTop = canvasContainerRef.current.scrollTop;
+          
+          // Calculate new scroll position
+          const newScrollLeft = currentScrollLeft - dx;
+          const newScrollTop = currentScrollTop - dy;
+          
+          // Get container and canvas dimensions
+          const containerRect = canvasContainerRef.current.getBoundingClientRect();
+          const maxScrollLeft = Math.max(0, width - containerRect.width);
+          const maxScrollTop = Math.max(0, height - containerRect.height);
+          
+          // Constrain scrolling within canvas bounds
+          canvasContainerRef.current.scrollLeft = Math.max(0, Math.min(maxScrollLeft, newScrollLeft));
+          canvasContainerRef.current.scrollTop = Math.max(0, Math.min(maxScrollTop, newScrollTop));
+    
+          // Don't update panStart here - keep it fixed to the initial click position
+          return;
+        }
+      };
+    
+      const handlePointerUp = (e) => {
+        if (e.button === 1) {
+          setIsPanning(false);
+          setPanStart(null);
+        }
+      };
+    
+      const handleClick = (e) => {
+        if (e.button === 1) {
+          e.preventDefault(); // block auto-scroll
+        }
+      };
+    
+      document.addEventListener('mousedown', handleMouseDown);
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('pointerup', handlePointerUp);
+      document.addEventListener('click', handleClick);
+    
+      return () => {
+        document.removeEventListener('mousedown', handleMouseDown);
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('pointerup', handlePointerUp);
+        document.removeEventListener('click', handleClick);
+      };
+    }, [isPanning, panStart]);
+
+    // Calculate dimensions
+    const width = gridSize.width * cellSize;
+    const height = gridSize.height * cellSize;
+
     // Handle background image
     useEffect(() => {
       // Handle both object format {url: '...', originalWidth: ..., originalHeight: ...} 
@@ -255,11 +372,85 @@ export const LayoutGrid = ({
       } else {
         setImageUrl(null);
       }
-    }, [backgroundImage]);
+    }, [backgroundImage, imageUrl]);
 
-    // Calculate dimensions
-    const width = gridSize.width * cellSize;
-    const height = gridSize.height * cellSize;
+    // Zoom effect on scroll
+    useEffect(() => {
+      const svg = svgRef.current;
+      const container = canvasContainerRef.current;
+    
+      if (!svg || !container) return;
+    
+      const handleWheel = (e) => {
+        // Only zoom when Ctrl key is pressed or when over the SVG
+        if (!e.ctrlKey && e.target.closest('svg') !== svg) return;
+        
+        e.preventDefault();
+    
+        const rect = svg.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+    
+        // Get current viewBox
+        const [x, y, w, h] = svg.getAttribute("viewBox").split(" ").map(Number);
+    
+        // Calculate zoom factor
+        const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9; // Zoom out/in
+        const newWidth = w * zoomFactor;
+        const newHeight = h * zoomFactor;
+    
+        // Calculate zoom center in viewBox coordinates
+        const centerX = (mouseX / rect.width) * w + x;
+        const centerY = (mouseY / rect.height) * h + y;
+    
+        // Calculate new viewBox position to zoom towards mouse
+        let newX = centerX - (centerX - x) * zoomFactor;
+        let newY = centerY - (centerY - y) * zoomFactor;
+    
+        // Get container dimensions
+        const containerRect = container.getBoundingClientRect();
+        const containerWidth = containerRect.width;
+        const containerHeight = containerRect.height;
+    
+        // Calculate zoom limits
+        // Minimum viewBox size (maximum zoom in): 1/10th of canvas
+        const minViewBoxWidth = width / 10;
+        const minViewBoxHeight = height / 10;
+        
+        // Maximum viewBox size (minimum zoom out): 
+        // Never larger than canvas to prevent white space
+        const maxViewBoxWidth = width;
+        const maxViewBoxHeight = height;
+    
+        // Apply zoom limits
+        const constrainedWidth = Math.max(minViewBoxWidth, Math.min(maxViewBoxWidth, newWidth));
+        const constrainedHeight = Math.max(minViewBoxHeight, Math.min(maxViewBoxHeight, newHeight));
+        
+        // Constrain panning - viewBox should never go outside canvas boundaries
+        // When viewBox equals canvas size (fully zoomed out), center it
+        if (constrainedWidth >= width && constrainedHeight >= height) {
+          // Fully zoomed out - center the view
+          newX = 0;
+          newY = 0;
+        } else {
+          // Zoomed in - apply boundary constraints
+          const maxX = width - constrainedWidth;
+          const maxY = height - constrainedHeight;
+          newX = Math.max(0, Math.min(maxX, newX));
+          newY = Math.max(0, Math.min(maxY, newY));
+        }
+    
+        // Apply the constrained viewBox
+        svg.setAttribute("viewBox", `${newX} ${newY} ${constrainedWidth} ${constrainedHeight}`);
+      };
+    
+      // Add wheel event listener to the container
+      container.addEventListener('wheel', handleWheel, { passive: false });
+    
+      return () => {
+        container.removeEventListener('wheel', handleWheel);
+      };
+    }, [width, height]);
 
     // Calculate image scale and position
     const imageScale = useMemo(() => {
@@ -348,10 +539,24 @@ export const LayoutGrid = ({
         const dx = e.clientX - panStart.x;
         const dy = e.clientY - panStart.y;
 
-        canvasContainerRef.current.scrollLeft -= dx;
-        canvasContainerRef.current.scrollTop -= dy;
+        // Get current scroll position
+        const currentScrollLeft = canvasContainerRef.current.scrollLeft;
+        const currentScrollTop = canvasContainerRef.current.scrollTop;
+        
+        // Calculate new scroll position
+        const newScrollLeft = currentScrollLeft - dx;
+        const newScrollTop = currentScrollTop - dy;
+        
+        // Get container and canvas dimensions
+        const containerRect = canvasContainerRef.current.getBoundingClientRect();
+        const maxScrollLeft = Math.max(0, width - containerRect.width);
+        const maxScrollTop = Math.max(0, height - containerRect.height);
+        
+        // Constrain scrolling within canvas bounds
+        canvasContainerRef.current.scrollLeft = Math.max(0, Math.min(maxScrollLeft, newScrollLeft));
+        canvasContainerRef.current.scrollTop = Math.max(0, Math.min(maxScrollTop, newScrollTop));
 
-        setPanStart({ x: e.clientX, y: e.clientY });
+        // Don't update panStart here - keep it fixed to the initial click position
         return;
       }
       
@@ -473,10 +678,11 @@ export const LayoutGrid = ({
       }
 
       if (!selectedElement) {
-        setHoveredElement({
+        const elementData = {
           type: 'section',
           data: section
-        });
+        };
+        setHoveredElement(elementData);
       }
     }, [selectedElement]);
 
@@ -489,12 +695,22 @@ export const LayoutGrid = ({
             setSelectedSectionForSimulation(section);
             setShowTraySimulation(true);
         } else {
-            setSelectedElement(prev => prev?.data === section ? null : {
+            const elementData = {
               type: 'section',
               data: section
-            });
+            };
+            
+            if (onElementSelect) {
+              const isCurrentlySelected = selectedElement?.data === section;
+              onElementSelect(isCurrentlySelected ? null : elementData);
+            } else {
+              // Fallback for backwards compatibility
+              const isCurrentlySelected = selectedElement?.data === section;
+              // Can't set state directly, so just log warning
+              console.warn('onElementSelect prop not provided to LayoutGrid');
+            }
         }
-    }, [lastClickTime]);
+    }, [lastClickTime, selectedElement, onElementSelect]);
 
     // Process backend sections and their cables
     const processedSections = useMemo(() => {
@@ -676,17 +892,18 @@ export const LayoutGrid = ({
 
         if (!isVisible) return null;
 
-        // Check if this section belongs to the hovered network
+        // Check if this section contains the hovered cable
+        const containsHoveredCable = hoveredCable && section.cables.has(hoveredCable);
         const isNetworkHovered = hoveredNetwork === section.network;
 
         // Calculate opacity based on hover states
         const opacity = hoveredCable ? (
-          section.cables.has(hoveredCable) ? 1 : 0.2
+          containsHoveredCable ? 1 : 0.2
         ) : hoveredNetwork ? (
           isNetworkHovered ? 1 : 0.2
         ) : 1;
 
-        const strokeWidth = (isNetworkHovered || section.cables.has(hoveredCable)) ? 
+        const strokeWidth = (isNetworkHovered || containsHoveredCable) ? 
           (section.strokeWidth || 4) * 1.5 : // Increase width for highlighted sections
           section.strokeWidth || 4;
 
@@ -745,22 +962,28 @@ export const LayoutGrid = ({
         };
       });
 
+      const elementData = {
+        type: 'machine',
+        data: {
+          ...machine,
+          name: machine.name,
+          cables: cablesWithRoutes,
+          mergedHistory: machines[machine.name]?.mergedHistory || { [machine.name]: true }
+        }
+      };
+
       if (selectedElement?.data?.name === machine.name) {
-        setSelectedElement(null);
+        if (onElementSelect) {
+          onElementSelect(null);
+        }
         setHoveredElement(null);
       } else {
-        setSelectedElement({
-          type: 'machine',
-          data: {
-            ...machine,
-            name: machine.name,
-            cables: cablesWithRoutes,
-            mergedHistory: machines[machine.name]?.mergedHistory || { [machine.name]: true }
-          }
-        });
+        if (onElementSelect) {
+          onElementSelect(elementData);
+        }
         setHoveredElement(null);
       }
-    }, [cables, backendSections, selectedElement, activeMode, selectedMachine, inheritMode, onMachineInherit, machines]);
+    }, [cables, backendSections, selectedElement, activeMode, selectedMachine, inheritMode, onMachineInherit, machines, onElementSelect]);
 
     // Add this near the top of the component with other event handlers
     const handleContextMenu = useCallback((e, machineName) => {
@@ -906,14 +1129,14 @@ export const LayoutGrid = ({
       return (
         <>
           {/* Base layer - all sections */}
-          {backendSections.map((section, index) => {
+          {processedSections.map((section, index) => {
             // If network is toggled off, don't render the section at all
             if (networkVisibility[section.network] === false) {
               return null;
             }
 
             // Check if this section contains the hovered cable
-            const containsHoveredCable = hoveredCable && section.cables.includes(hoveredCable);
+            const containsHoveredCable = hoveredCable && section.cables.has(hoveredCable);
             const isNetworkHovered = hoveredNetwork === section.network;
 
             return (
@@ -932,14 +1155,14 @@ export const LayoutGrid = ({
                 <path
                   d={`M ${section.points.map(p => `${p.x * cellSize + cellSize/2} ${p.y * cellSize + cellSize/2}`).join(' L ')}`}
                   stroke={getNetworkColor(section.network)}
-                  strokeWidth={isNetworkHovered ? (section.strokeWidth || 4) * 1.2 : (section.strokeWidth || 4)}
+                  strokeWidth={containsHoveredCable ? (section.strokeWidth || 4) * 2 : isNetworkHovered ? (section.strokeWidth || 4) * 1.2 : (section.strokeWidth || 4)}
                   fill="none"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   style={{
                     transition: 'all 0.2s ease',
-                    filter: (containsHoveredCable || isNetworkHovered) ? 'drop-shadow(0 0 3px rgba(0,0,0,0.3))' : 'none',
-                    strokeDasharray: containsHoveredCable ? '4 2' : 'none'
+                    filter: (containsHoveredCable || isNetworkHovered) ? 'drop-shadow(0 0 6px rgba(0,0,0,0.4))' : 'none',
+                    strokeDasharray: containsHoveredCable ? '8 4' : 'none'
                   }}
                 />
               </g>
@@ -947,7 +1170,7 @@ export const LayoutGrid = ({
           })}
 
           {/* Invisible hit areas for hover detection - only for visible networks */}
-          {backendSections.map((section, index) => {
+          {processedSections.map((section, index) => {
             if (networkVisibility[section.network] === false) {
               return null;
             }
@@ -976,10 +1199,12 @@ export const LayoutGrid = ({
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setSelectedElement({
-                    type: 'section',
-                    data: section
-                  });
+                  if (onElementSelect) {
+                    onElementSelect({
+                      type: 'section',
+                      data: section
+                    });
+                  }
                 }}
               />
             );
@@ -1074,477 +1299,425 @@ export const LayoutGrid = ({
       }
     }, [cables, backendSections, selectedElement, machines]);
 
-    // Main render
+    // Main render - simplified to just be the canvas container
     return (
-      <div className="w-[1400px] mx-auto">
-        <div className="flex gap-4 bg-white rounded-xl p-6">
-          <div className="flex-1 flex flex-col gap-4">
-            {/* Network Legend */}
-            <div className="bg-white rounded-lg shadow-sm p-2">
-              <div className="space-y-2">
-                {networkInfo.map((network) => (
-                  <div 
-                    key={network.id || network.name} 
-                    className={`flex items-center gap-2 p-1.5 rounded transition-colors ${
-                      hoveredNetwork === network.name ? 'bg-gray-100' : 'hover:bg-gray-50'
-                    }`}
-                    onMouseEnter={() => onNetworkHover(network.name)}
-                    onMouseLeave={() => onNetworkHover(null)}
-                  >
-                    <Switch
-                      checked={networkVisibility[network.name] !== false}
-                      onCheckedChange={(checked) => {
-                        onNetworkVisibilityChange({
-                          ...networkVisibility,
-                          [network.name]: checked
-                        });
-                      }}
-                    />
-                    <div className="flex items-center gap-2">
-                      <div
-                        className={`w-3 h-3 rounded-full transition-transform ${
-                          hoveredNetwork === network.name ? 'scale-125' : ''
-                        }`}
-                        style={{ backgroundColor: network.color }}
-                      />
-                      <span className={`text-sm ${
-                        hoveredNetwork === network.name ? 'font-medium' : ''
-                      }`}>{network.name}</span>
-                      <span className="text-xs text-gray-500">
-                        ({network.cables.size} cables)
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Canvas Container */}
-                          <div
-                ref={canvasContainerRef}
-                className="relative bg-white rounded-lg shadow-sm mx-auto overflow-auto"
-                style={{
-                  maxWidth: '1200px',
-                  maxHeight: '1200px',
-                  border: '1px solid #ccc'
-                }}
-                onMouseLeave={handleMouseLeave}
-              >
-
-              <svg
-                ref={svgRef}
-                width={width}
-                height={height}
-                viewBox={`0 0 ${width} ${height}`}
-                className={`cable-tray-grid ${getCursorStyle()}`}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseLeave}
-                onClick={(event) => {
-                  // If we're in machine placement mode, just handle the placement
-                  if (activeMode === EditorModes.MACHINE && selectedMachine) {
-                    handleClick(event);
-                    return;
-                  }
-
-                  // If the click wasn't on a machine or section (it bubbled up to here),
-                  // then clear the selection
-                  if (event.target === event.currentTarget) {
-                    setSelectedElement(null);
-                    setHoveredElement(null);
-                  }
-
+      <div className="w-full h-full">
+        {/* Canvas Container */}
+        <div className="w-full h-full relative">
+          <div
+            ref={canvasContainerRef}
+            className="bg-white rounded-lg shadow-sm overflow-auto w-full h-full"
+            style={{
+              border: '1px solid #ccc'
+            }}
+            onMouseLeave={handleMouseLeave}
+          >
+            <svg
+              ref={svgRef}
+              width={width}
+              height={height}
+              viewBox={`0 0 ${width} ${height}`}
+              className={`cable-tray-grid ${getCursorStyle()}`}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseLeave}
+              onClick={(event) => {
+                // If we're in machine placement mode, just handle the placement
+                if (activeMode === EditorModes.MACHINE && selectedMachine) {
                   handleClick(event);
-                  handleCanvasClick(event);
-                }}
-              >
-                {/* Background image if exists */}
-                {imageUrl && (
-                  <image
-                    key="background-image"
-                    href={imageUrl}
-                    width={backgroundImage?.originalWidth ? (backgroundImage.originalWidth * imageScale) : width}
-                    height={backgroundImage?.originalHeight ? (backgroundImage.originalHeight * imageScale) : height}
-                    x={backgroundImage?.originalWidth ? ((width - backgroundImage.originalWidth * imageScale) / 2) : 0}
-                    y={backgroundImage?.originalHeight ? ((height - backgroundImage.originalHeight * imageScale) / 2) : 0}
-                    preserveAspectRatio="none"
-                    opacity="0.5"
-                  />
-                )}
+                  return;
+                }
 
-                {/* Grid Lines */}
-                {Array.from({ length: Math.max(gridSize.width, gridSize.height) + 1 }).map((_, i) => (
-                  <React.Fragment key={`grid-${i}`}>
-                    {/* Horizontal lines - only draw up to height */}
-                    {i <= gridSize.height && (
-                      <line
-                        x1={0}
-                        y1={i * cellSize}
-                        x2={width}
-                        y2={i * cellSize}
-                        stroke="#f0f0f0"
-                        strokeWidth="0.5"
-                      />
-                    )}
-                    {/* Vertical lines - only draw up to width */}
-                    {i <= gridSize.width && (
-                      <line
-                        x1={i * cellSize}
-                        y1={0}
-                        x2={i * cellSize}
-                        y2={height}
-                        stroke="#f0f0f0"
-                        strokeWidth="0.5"
-                      />
-                    )}
-                    {/* Add measurements every 10 cells (1 meter) */}
-                    {i > 0 && i % 10 === 0 && (
-                      <>
-                        {/* Vertical measurement - only show up to height */}
-                        {i <= gridSize.height && (
-                          <text
-                            x={2}
-                            y={i * cellSize - 2}
-                            className="text-xs fill-gray-400"
-                          >
-                            {(i / 10).toFixed(1)}m
-                          </text>
-                        )}
-                        {/* Horizontal measurement - only show up to width */}
-                        {i <= gridSize.width && (
-                          <text
-                            x={i * cellSize + 2}
-                            y={10}
-                            className="text-xs fill-gray-400"
-                          >
-                            {(i / 10).toFixed(1)}m
-                          </text>
-                        )}
-                      </>
-                    )}
-                  </React.Fragment>
-                ))}
+                // If the click wasn't on a machine or section (it bubbled up to here),
+                // then clear the selection
+                if (event.target === event.currentTarget) {
+                  if (onElementSelect) {
+                    onElementSelect(null);
+                  }
+                  setHoveredElement(null);
+                }
 
-                {/* Scale indicator */}
-                <g transform={`translate(${width - 120}, ${height - 40})`}>
-                  <rect
-                    x={0}
-                    y={0}
-                    width={100}
-                    height={30}
-                    fill="white"
-                    stroke="#e5e7eb"
-                    rx={4}
-                  />
-                  <line
-                    x1={10}
-                    y1={20}
-                    x2={90}
-                    y2={20}
-                    stroke="#9ca3af"
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                  />
-                  <line
-                    x1={10}
-                    y1={15}
-                    x2={10}
-                    y2={25}
-                    stroke="#9ca3af"
-                    strokeWidth={2}
-                  />
-                  <line
-                    x1={90}
-                    y1={15}
-                    x2={90}
-                    y2={25}
-                    stroke="#9ca3af"
-                    strokeWidth={2}
-                  />
-                  <text
-                    x={50}
-                    y={15}
-                    textAnchor="middle"
-                    className="text-xs fill-gray-500"
-                  >
-                    1 meter
-                  </text>
-                </g>
+                handleClick(event);
+                handleCanvasClick(event);
+              }}
+            >
+              {/* Background image if exists */}
+              {imageUrl && (
+                <image
+                  key="background-image"
+                  href={imageUrl}
+                  width={backgroundImage?.originalWidth ? (backgroundImage.originalWidth * imageScale) : width}
+                  height={backgroundImage?.originalHeight ? (backgroundImage.originalHeight * imageScale) : height}
+                  x={backgroundImage?.originalWidth ? ((width - backgroundImage.originalWidth * imageScale) / 2) : 0}
+                  y={backgroundImage?.originalHeight ? ((height - backgroundImage.originalHeight * imageScale) / 2) : 0}
+                  preserveAspectRatio="none"
+                  opacity="0.5"
+                />
+              )}
 
-                {/* Preview Walls */}
-                {previewWalls.map(wall => (
-                  <rect
-                    key={`preview-wall-${wall.x}-${wall.y}`}
-                    x={wall.x * cellSize}
-                    y={wall.y * cellSize}
-                    width={cellSize}
-                    height={cellSize}
-                    fill="#4b5563"
-                    opacity="0.5"
-                  />
-                ))}
-
-                {/* Cable Paths */}
-                <g className="cable-paths" style={{ pointerEvents: 'all' }}>
-                  {renderCablePaths()}
-                </g>
-
-                {/* Walls */}
-                {walls.map((wall, index) => (
-                  <rect
-                    key={`wall-${wall.x}-${wall.y}`}
-                    x={wall.x * cellSize}
-                    y={wall.y * cellSize}
-                    width={cellSize}
-                    height={cellSize}
-                    fill="#4b5563"
-                  />
-                ))}
-                {trays.map((tray, index) => (
-                  <rect
-                    key={`tray-${tray.x}-${tray.y}-${index}`}
-                    x={tray.x * cellSize}
-                    y={tray.y * cellSize}
-                    width={cellSize}
-                    height={cellSize}
-                    fill="#3b82f6" // Azul (o el color que prefieras)
-                    opacity="0.5"
-                  />
-                ))}
-
-                {/* Perforations */}
-                {perforations.map((perf, index) => (
-                  <circle
-                    key={`perf-${perf.x}-${perf.y}`}
-                    cx={perf.x * cellSize + cellSize / 2}
-                    cy={perf.y * cellSize + cellSize / 2}
-                    r={cellSize / 4}
-                    fill="#ef4444"
-                  />
-                ))}
-
-                {/* Machines */}
-                <g className="machines">
-                  {renderMachines()}
-                </g>
-
-                {/* Other elements */}
-                {lastClickPos && (
-                  <circle
-                    cx={lastClickPos.x * cellSize + cellSize/2}
-                    cy={lastClickPos.y * cellSize + cellSize/2}
-                    r={4}
-                    fill="red"
-                    opacity={0.7}
-                  />
-                )}
-
-                {/* Hanan Grid */}
-                {hananGrid.xCoords.length > 0 && (
-                  <g className="hanan-grid">
-                    {/* Vertical lines */}
-                    {hananGrid.xCoords.map(x => (
-                      <line
-                        key={`hanan-v-${x}`}
-                        x1={x * cellSize + cellSize/2}
-                        y1={0}
-                        x2={x * cellSize + cellSize/2}
-                        y2={height}
-                        stroke="#e5e7eb"
-                        strokeWidth="1"
-                        strokeDasharray="4,4"
-                      />
-                    ))}
-                    {/* Horizontal lines */}
-                    {hananGrid.yCoords.map(y => (
-                      <line
-                        key={`hanan-h-${y}`}
-                        x1={0}
-                        y1={y * cellSize + cellSize/2}
-                        x2={width}
-                        y2={y * cellSize + cellSize/2}
-                        stroke="#e5e7eb"
-                        strokeWidth="1"
-                        strokeDasharray="4,4"
-                      />
-                    ))}
-                    {/* Intersection points */}
-                    {hananGrid.xCoords.map(x => 
-                      hananGrid.yCoords.map(y => (
-                        <circle
-                          key={`hanan-point-${x}-${y}`}
-                          cx={x * cellSize + cellSize/2}
-                          cy={y * cellSize + cellSize/2}
-                          r={2}
-                          fill="#e5e7eb"
-                        />
-                      ))
-                    )}
-                  </g>
-                )}
-
-                {/* Context Menu */}
-                {contextMenu.show && (
-                  <foreignObject
-                    key="context-menu"
-                    x={contextMenu.x}
-                    y={contextMenu.y}
-                    width={160}
-                    height={120}
-                    style={{ overflow: 'visible' }}
-                  >
-                    <div 
-                      className="context-menu bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
-                      style={{ width: '160px' }}
-                    >
-                      <button
-                        className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
-                        onClick={() => handleStartMachineMove(contextMenu.machine)}
-                      >
-                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 15v4c0 1.1.9 2 2 2h4M21 9V5c0-1.1-.9-2-2-2h-4m0 0L19 7M5 5l4 4M5 19l4-4m6 4l4-4"/>
-                        </svg>
-                        Move
-                      </button>
-                      <button
-                        className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
-                        onClick={() => {
-                          setInheritMode({ active: true, targetMachine: contextMenu.machine });
-                          setContextMenu({ show: false, x: 0, y: 0, machine: null });
-                        }}
-                      >
-                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                        </svg>
-                        Inherit From...
-                      </button>
-                      <button
-                        className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 text-red-600 flex items-center gap-2"
-                        onClick={() => handleRemoveMachine(contextMenu.machine)}
-                      >
-                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                        </svg>
-                        Remove
-                      </button>
-                    </div>
-                  </foreignObject>
-                )}
-
-                {/* Inheritance Menu Modal */}
-                {showInheritMenu && (
-                  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg shadow-lg p-4 w-96">
-                      <h3 className="text-lg font-medium mb-4">Inherit From Machine</h3>
-                      <div className="max-h-64 overflow-y-auto space-y-2">
-                        {Object.entries(machines)
-                          .filter(([name]) => name !== inheritFromMachine)
-                          .map(([name, machine]) => (
-                            <button
-                              key={name}
-                              className="w-full p-3 text-left hover:bg-gray-50 rounded-md flex items-center gap-3 border"
-                              onClick={() => {
-                                onMachineInherit(inheritFromMachine, name);
-                                setShowInheritMenu(false);
-                                setInheritFromMachine(null);
-                              }}
-                            >
-                              <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white font-medium">
-                                {name}
-                              </div>
-                              <div className="flex flex-col">
-                                <span className="font-medium">{name}</span>
-                                {machine.description && (
-                                  <span className="text-sm text-gray-500">{machine.description}</span>
-                                )}
-                              </div>
-                            </button>
-                          ))}
-                      </div>
-                      <div className="mt-4 flex justify-end">
-                        <button
-                          className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-                          onClick={() => {
-                            setShowInheritMenu(false);
-                            setInheritFromMachine(null);
-                          }}
+              {/* Grid Lines */}
+              {Array.from({ length: Math.max(gridSize.width, gridSize.height) + 1 }).map((_, i) => (
+                <React.Fragment key={`grid-${i}`}>
+                  {/* Horizontal lines - only draw up to height */}
+                  {i <= gridSize.height && (
+                    <line
+                      x1={0}
+                      y1={i * cellSize}
+                      x2={width}
+                      y2={i * cellSize}
+                      stroke="#f0f0f0"
+                      strokeWidth="0.5"
+                    />
+                  )}
+                  {/* Vertical lines - only draw up to width */}
+                  {i <= gridSize.width && (
+                    <line
+                      x1={i * cellSize}
+                      y1={0}
+                      x2={i * cellSize}
+                      y2={height}
+                      stroke="#f0f0f0"
+                      strokeWidth="0.5"
+                    />
+                  )}
+                  {/* Add measurements every 10 cells (1 meter) */}
+                  {i > 0 && i % 10 === 0 && (
+                    <>
+                      {/* Vertical measurement - only show up to height */}
+                      {i <= gridSize.height && (
+                        <text
+                          x={2}
+                          y={i * cellSize - 2}
+                          className="text-xs fill-gray-400"
                         >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                          {(i / 10).toFixed(1)}m
+                        </text>
+                      )}
+                      {/* Horizontal measurement - only show up to width */}
+                      {i <= gridSize.width && (
+                        <text
+                          x={i * cellSize + 2}
+                          y={10}
+                          className="text-xs fill-gray-400"
+                        >
+                          {(i / 10).toFixed(1)}m
+                        </text>
+                      )}
+                    </>
+                  )}
+                </React.Fragment>
+              ))}
 
-                {inheritMode.active && (
-                  <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
-                    <span>Click on a machine to inherit from it</span>
+              {/* Scale indicator */}
+              <g transform={`translate(${width - 120}, ${height - 40})`}>
+                <rect
+                  x={0}
+                  y={0}
+                  width={100}
+                  height={30}
+                  fill="white"
+                  stroke="#e5e7eb"
+                  rx={4}
+                />
+                <line
+                  x1={10}
+                  y1={20}
+                  x2={90}
+                  y2={20}
+                  stroke="#9ca3af"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                />
+                <line
+                  x1={10}
+                  y1={15}
+                  x2={10}
+                  y2={25}
+                  stroke="#9ca3af"
+                  strokeWidth={2}
+                />
+                <line
+                  x1={90}
+                  y1={15}
+                  x2={90}
+                  y2={25}
+                  stroke="#9ca3af"
+                  strokeWidth={2}
+                />
+                <text
+                  x={50}
+                  y={15}
+                  textAnchor="middle"
+                  className="text-xs fill-gray-500"
+                >
+                  1 meter
+                </text>
+              </g>
+
+              {/* Preview Walls */}
+              {previewWalls.map(wall => (
+                <rect
+                  key={`preview-wall-${wall.x}-${wall.y}`}
+                  x={wall.x * cellSize}
+                  y={wall.y * cellSize}
+                  width={cellSize}
+                  height={cellSize}
+                  fill="#4b5563"
+                  opacity="0.5"
+                />
+              ))}
+
+              {/* Cable Paths */}
+              <g className="cable-paths" style={{ pointerEvents: 'all' }}>
+                {renderCablePaths()}
+              </g>
+
+              {/* Walls */}
+              {walls.map((wall, index) => (
+                <rect
+                  key={`wall-${wall.x}-${wall.y}`}
+                  x={wall.x * cellSize}
+                  y={wall.y * cellSize}
+                  width={cellSize}
+                  height={cellSize}
+                  fill="#4b5563"
+                />
+              ))}
+              {trays.map((tray, index) => (
+                <rect
+                  key={`tray-${tray.x}-${tray.y}-${index}`}
+                  x={tray.x * cellSize}
+                  y={tray.y * cellSize}
+                  width={cellSize}
+                  height={cellSize}
+                  fill="#3b82f6" // Azul (o el color que prefieras)
+                  opacity="0.5"
+                />
+              ))}
+
+              {/* Perforations */}
+              {perforations.map((perf, index) => (
+                <circle
+                  key={`perf-${perf.x}-${perf.y}`}
+                  cx={perf.x * cellSize + cellSize / 2}
+                  cy={perf.y * cellSize + cellSize / 2}
+                  r={cellSize / 4}
+                  fill="#ef4444"
+                />
+              ))}
+
+              {/* Machines */}
+              <g className="machines">
+                {renderMachines()}
+              </g>
+
+              {/* Other elements */}
+              {lastClickPos && (
+                <circle
+                  cx={lastClickPos.x * cellSize + cellSize/2}
+                  cy={lastClickPos.y * cellSize + cellSize/2}
+                  r={4}
+                  fill="red"
+                  opacity={0.7}
+                />
+              )}
+
+              {/* Hanan Grid */}
+              {hananGrid.xCoords.length > 0 && (
+                <g className="hanan-grid">
+                  {/* Vertical lines */}
+                  {hananGrid.xCoords.map(x => (
+                    <line
+                      key={`hanan-v-${x}`}
+                      x1={x * cellSize + cellSize/2}
+                      y1={0}
+                      x2={x * cellSize + cellSize/2}
+                      y2={height}
+                      stroke="#e5e7eb"
+                      strokeWidth="1"
+                      strokeDasharray="4,4"
+                    />
+                  ))}
+                  {/* Horizontal lines */}
+                  {hananGrid.yCoords.map(y => (
+                    <line
+                      key={`hanan-h-${y}`}
+                      x1={0}
+                      y1={y * cellSize + cellSize/2}
+                      x2={width}
+                      y2={y * cellSize + cellSize/2}
+                      stroke="#e5e7eb"
+                      strokeWidth="1"
+                      strokeDasharray="4,4"
+                    />
+                  ))}
+                  {/* Intersection points */}
+                  {hananGrid.xCoords.map(x => 
+                    hananGrid.yCoords.map(y => (
+                      <circle
+                        key={`hanan-point-${x}-${y}`}
+                        cx={x * cellSize + cellSize/2}
+                        cy={y * cellSize + cellSize/2}
+                        r={2}
+                        fill="#e5e7eb"
+                      />
+                    ))
+                  )}
+                </g>
+              )}
+
+              {/* Context Menu */}
+              {contextMenu.show && (
+                <foreignObject
+                  key="context-menu"
+                  x={contextMenu.x}
+                  y={contextMenu.y}
+                  width={160}
+                  height={120}
+                  style={{ overflow: 'visible' }}
+                >
+                  <div 
+                    className="context-menu bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
+                    style={{ width: '160px' }}
+                  >
                     <button
-                      className="ml-2 hover:text-blue-200"
-                      onClick={() => setInheritMode({ active: false, targetMachine: null })}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                      onClick={() => handleStartMachineMove(contextMenu.machine)}
                     >
-                      Cancel
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 15v4c0 1.1.9 2 2 2h4M21 9V5c0-1.1-.9-2-2-2h-4m0 0L19 7M5 5l4 4M5 19l4-4"/>
+                      </svg>
+                      Move
+                    </button>
+                    <button
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                      onClick={() => {
+                        setInheritMode({ active: true, targetMachine: contextMenu.machine });
+                        setContextMenu({ show: false, x: 0, y: 0, machine: null });
+                      }}
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                      </svg>
+                      Inherit From...
+                    </button>
+                    <button
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 text-red-600 flex items-center gap-2"
+                      onClick={() => handleRemoveMachine(contextMenu.machine)}
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                      </svg>
+                      Remove
                     </button>
                   </div>
-                )}
+                </foreignObject>
+              )}
 
-                {/* Add Steiner points layer between cable paths and machines */}
-                <g className="steiner-points">
-                    {renderSteinerPoints()}
-                </g>
-
-                {/* Section Context Menu */}
-                {sectionContextMenu.show && (
-                  <foreignObject
-                    x={sectionContextMenu.x}
-                    y={sectionContextMenu.y}
-                    width={160}
-                    height={80}
-                    style={{ overflow: 'visible' }}
-                  >
-                    <div 
-                      className="context-menu bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
-                      style={{ width: '160px' }}
-                    >
+              {/* Inheritance Menu Modal */}
+              {showInheritMenu && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-lg shadow-lg p-4 w-96">
+                    <h3 className="text-lg font-medium mb-4">Inherit From Machine</h3>
+                    <div className="max-h-64 overflow-y-auto space-y-2">
+                      {Object.entries(machines)
+                        .filter(([name]) => name !== inheritFromMachine)
+                        .map(([name, machine]) => (
+                          <button
+                            key={name}
+                            className="w-full p-3 text-left hover:bg-gray-50 rounded-md flex items-center gap-3 border"
+                            onClick={() => {
+                              onMachineInherit(inheritFromMachine, name);
+                              setShowInheritMenu(false);
+                              setInheritFromMachine(null);
+                            }}
+                          >
+                            <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white font-medium">
+                              {name}
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="font-medium">{name}</span>
+                              {machine.description && (
+                                <span className="text-sm text-gray-500">{machine.description}</span>
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                    </div>
+                    <div className="mt-4 flex justify-end">
                       <button
-                        className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                        className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
                         onClick={() => {
-                          setShowTraySimulation(true);
-                          setSelectedSectionForSimulation(sectionContextMenu.section);
-                          setSectionContextMenu({ show: false, x: 0, y: 0, section: null });
+                          setShowInheritMenu(false);
+                          setInheritFromMachine(null);
                         }}
                       >
-                        <svg 
-                          className="w-4 h-4" 
-                          viewBox="0 0 24 24" 
-                          fill="none" 
-                          stroke="currentColor" 
-                          strokeWidth="2"
-                        >
-                          <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
-                          <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" />
-                        </svg>
-                        Simulate Cable Tray...
+                        Cancel
                       </button>
                     </div>
-                  </foreignObject>
-                )}
-              </svg>
-            </div>
-          </div>
+                  </div>
+                </div>
+              )}
 
-          {/* Info Panel */}
-          <div className="w-80 bg-white rounded-lg shadow-sm p-4 flex flex-col shrink-0" style={{ height: `${height}px` }}>
-            <InfoPanel 
-              hoveredInfo={hoveredElement}
-              selectedElement={selectedElement}
-              onClose={() => setSelectedElement(null)}
-              onCableHover={setHoveredCable}
-            />
+              {inheritMode.active && (
+                <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
+                  <span>Click on a machine to inherit from it</span>
+                  <button
+                    className="ml-2 hover:text-blue-200"
+                    onClick={() => setInheritMode({ active: false, targetMachine: null })}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {/* Add Steiner points layer between cable paths and machines */}
+              <g className="steiner-points">
+                  {renderSteinerPoints()}
+              </g>
+
+              {/* Section Context Menu */}
+              {sectionContextMenu.show && (
+                <foreignObject
+                  x={sectionContextMenu.x}
+                  y={sectionContextMenu.y}
+                  width={160}
+                  height={80}
+                  style={{ overflow: 'visible' }}
+                >
+                  <div 
+                    className="context-menu bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
+                    style={{ width: '160px' }}
+                  >
+                    <button
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
+                      onClick={() => {
+                        setShowTraySimulation(true);
+                        setSelectedSectionForSimulation(sectionContextMenu.section);
+                        setSectionContextMenu({ show: false, x: 0, y: 0, section: null });
+                      }}
+                    >
+                      <svg 
+                        className="w-4 h-4" 
+                        viewBox="0 0 24 24" 
+                        fill="none" 
+                        stroke="currentColor" 
+                        strokeWidth="2"
+                      >
+                        <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                        <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" />
+                      </svg>
+                      Simulate Cable Tray...
+                    </button>
+                  </div>
+                </foreignObject>
+              )}
+            </svg>
           </div>
         </div>
 
+        {/* Cable Tray Simulation Modal */}
         {showTraySimulation && selectedSectionForSimulation && (
           <CableTraySimulation
             cables={Array.from(selectedSectionForSimulation.cables).map(cableId => {
@@ -1633,7 +1806,12 @@ LayoutGrid.propTypes = {
   steinerPoints: PropTypes.arrayOf(PropTypes.shape({
     x: PropTypes.number,
     y: PropTypes.number
-  }))
+  })),
+  hoveredInfo: PropTypes.object,
+  selectedElement: PropTypes.object,
+  onElementSelect: PropTypes.func,
+  onCableHover: PropTypes.func,
+  hoveredCable: PropTypes.string
 };
 
 // Add display name to the main component
