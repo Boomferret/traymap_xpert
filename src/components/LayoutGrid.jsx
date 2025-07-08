@@ -236,6 +236,9 @@ export const LayoutGrid = ({
     const canvasContainerRef = useRef(null);
     const [isPanning, setIsPanning] = useState(false);
     const [panStart, setPanStart] = useState(null);
+    // Calculate dimensions
+    const width = gridSize.width * cellSize;
+    const height = gridSize.height * cellSize;
 
     // Enhanced panning effects
     useEffect(() => {
@@ -285,70 +288,83 @@ export const LayoutGrid = ({
     }, []);
     
     useEffect(() => {
+      const svg = svgRef.current;
+      if (!svg) return;
+    
+      let viewBox = { x: 0, y: 0, width: 1000, height: 1000 };
+      let isPanning = false;
+      let panStart = null;
+    
+      const updateViewBox = () => {
+        svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`);
+      };
+    
+      const handleWheel = (e) => {
+        e.preventDefault();
+        const { left, top, width, height } = svg.getBoundingClientRect();
+        const mouseX = e.clientX - left;
+        const mouseY = e.clientY - top;
+        const zoomAmount = 0.1;
+        const zoomDirection = e.deltaY > 0 ? -1 : 1;
+        const scale = 1 - zoomAmount * zoomDirection;
+    
+        const svgX = viewBox.x + (mouseX / width) * viewBox.width;
+        const svgY = viewBox.y + (mouseY / height) * viewBox.height;
+    
+        
+        viewBox.x = svgX - (svgX - viewBox.x) * scale;
+        viewBox.y = svgY - (svgY - viewBox.y) * scale;
+        viewBox.width *= scale;
+        viewBox.height *= scale;
+    
+        updateViewBox();
+      };
+    
       const handleMouseDown = (e) => {
         if (e.button === 1) {
-          e.preventDefault(); // prevent autoscroll
-          setIsPanning(true);
-          setPanStart({ x: e.clientX, y: e.clientY });
+          e.preventDefault();
+          isPanning = true;
+          panStart = { x: e.clientX, y: e.clientY };
         }
       };
     
       const handleMouseMove = (e) => {
-        if (isPanning && panStart && canvasContainerRef.current) {
+        if (isPanning && panStart) {
           const dx = e.clientX - panStart.x;
           const dy = e.clientY - panStart.y;
     
-          // Get current scroll position
-          const currentScrollLeft = canvasContainerRef.current.scrollLeft;
-          const currentScrollTop = canvasContainerRef.current.scrollTop;
-          
-          // Calculate new scroll position
-          const newScrollLeft = currentScrollLeft - dx;
-          const newScrollTop = currentScrollTop - dy;
-          
-          // Get container and canvas dimensions
-          const containerRect = canvasContainerRef.current.getBoundingClientRect();
-          const maxScrollLeft = Math.max(0, width - containerRect.width);
-          const maxScrollTop = Math.max(0, height - containerRect.height);
-          
-          // Constrain scrolling within canvas bounds
-          canvasContainerRef.current.scrollLeft = Math.max(0, Math.min(maxScrollLeft, newScrollLeft));
-          canvasContainerRef.current.scrollTop = Math.max(0, Math.min(maxScrollTop, newScrollTop));
+          const svgRect = svg.getBoundingClientRect();
+          const dxSvg = (dx / svgRect.width) * viewBox.width;
+          const dySvg = (dy / svgRect.height) * viewBox.height;
     
-          // Don't update panStart here - keep it fixed to the initial click position
-          return;
+          viewBox.x -= dxSvg;
+          viewBox.y -= dySvg;
+    
+          panStart = { x: e.clientX, y: e.clientY };
+          updateViewBox();
         }
       };
     
-      const handlePointerUp = (e) => {
-        if (e.button === 1) {
-          setIsPanning(false);
-          setPanStart(null);
-        }
+      const handleMouseUp = () => {
+        isPanning = false;
+        panStart = null;
       };
     
-      const handleClick = (e) => {
-        if (e.button === 1) {
-          e.preventDefault(); // block auto-scroll
-        }
-      };
-    
-      document.addEventListener('mousedown', handleMouseDown);
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('pointerup', handlePointerUp);
-      document.addEventListener('click', handleClick);
+      svg.addEventListener('wheel', handleWheel, { passive: false });
+      svg.addEventListener('mousedown', handleMouseDown);
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
     
       return () => {
-        document.removeEventListener('mousedown', handleMouseDown);
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('pointerup', handlePointerUp);
-        document.removeEventListener('click', handleClick);
+        svg.removeEventListener('wheel', handleWheel);
+        svg.removeEventListener('mousedown', handleMouseDown);
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
       };
-    }, [isPanning, panStart]);
+    }, []);
+    
+    
 
-    // Calculate dimensions
-    const width = gridSize.width * cellSize;
-    const height = gridSize.height * cellSize;
 
     // Handle background image
     useEffect(() => {
@@ -374,83 +390,7 @@ export const LayoutGrid = ({
       }
     }, [backgroundImage, imageUrl]);
 
-    // Zoom effect on scroll
-    useEffect(() => {
-      const svg = svgRef.current;
-      const container = canvasContainerRef.current;
     
-      if (!svg || !container) return;
-    
-      const handleWheel = (e) => {
-        // Only zoom when Ctrl key is pressed or when over the SVG
-        if (!e.ctrlKey && e.target.closest('svg') !== svg) return;
-        
-        e.preventDefault();
-    
-        const rect = svg.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-    
-        // Get current viewBox
-        const [x, y, w, h] = svg.getAttribute("viewBox").split(" ").map(Number);
-    
-        // Calculate zoom factor
-        const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9; // Zoom out/in
-        const newWidth = w * zoomFactor;
-        const newHeight = h * zoomFactor;
-    
-        // Calculate zoom center in viewBox coordinates
-        const centerX = (mouseX / rect.width) * w + x;
-        const centerY = (mouseY / rect.height) * h + y;
-    
-        // Calculate new viewBox position to zoom towards mouse
-        let newX = centerX - (centerX - x) * zoomFactor;
-        let newY = centerY - (centerY - y) * zoomFactor;
-    
-        // Get container dimensions
-        const containerRect = container.getBoundingClientRect();
-        const containerWidth = containerRect.width;
-        const containerHeight = containerRect.height;
-    
-        // Calculate zoom limits
-        // Minimum viewBox size (maximum zoom in): 1/10th of canvas
-        const minViewBoxWidth = width / 10;
-        const minViewBoxHeight = height / 10;
-        
-        // Maximum viewBox size (minimum zoom out): 
-        // Never larger than canvas to prevent white space
-        const maxViewBoxWidth = width;
-        const maxViewBoxHeight = height;
-    
-        // Apply zoom limits
-        const constrainedWidth = Math.max(minViewBoxWidth, Math.min(maxViewBoxWidth, newWidth));
-        const constrainedHeight = Math.max(minViewBoxHeight, Math.min(maxViewBoxHeight, newHeight));
-        
-        // Constrain panning - viewBox should never go outside canvas boundaries
-        // When viewBox equals canvas size (fully zoomed out), center it
-        if (constrainedWidth >= width && constrainedHeight >= height) {
-          // Fully zoomed out - center the view
-          newX = 0;
-          newY = 0;
-        } else {
-          // Zoomed in - apply boundary constraints
-          const maxX = width - constrainedWidth;
-          const maxY = height - constrainedHeight;
-          newX = Math.max(0, Math.min(maxX, newX));
-          newY = Math.max(0, Math.min(maxY, newY));
-        }
-    
-        // Apply the constrained viewBox
-        svg.setAttribute("viewBox", `${newX} ${newY} ${constrainedWidth} ${constrainedHeight}`);
-      };
-    
-      // Add wheel event listener to the container
-      container.addEventListener('wheel', handleWheel, { passive: false });
-    
-      return () => {
-        container.removeEventListener('wheel', handleWheel);
-      };
-    }, [width, height]);
 
     // Calculate image scale and position
     const imageScale = useMemo(() => {
@@ -1306,7 +1246,7 @@ export const LayoutGrid = ({
         <div className="w-full h-full relative">
           <div
             ref={canvasContainerRef}
-            className="bg-white rounded-lg shadow-sm overflow-auto w-full h-full"
+            className="bg-white rounded-lg shadow-sm overflow-clip w-full h-full"
             style={{
               border: '1px solid #ccc'
             }}
