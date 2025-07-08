@@ -301,24 +301,39 @@ export const LayoutGrid = ({
     
       const handleWheel = (e) => {
         e.preventDefault();
-        const { left, top, width, height } = svg.getBoundingClientRect();
+        const { left, top, width: svgWidth, height: svgHeight } = svg.getBoundingClientRect();
         const mouseX = e.clientX - left;
         const mouseY = e.clientY - top;
         const zoomAmount = 0.1;
         const zoomDirection = e.deltaY > 0 ? -1 : 1;
         const scale = 1 - zoomAmount * zoomDirection;
-    
-        const svgX = viewBox.x + (mouseX / width) * viewBox.width;
-        const svgY = viewBox.y + (mouseY / height) * viewBox.height;
-    
-        
-        viewBox.x = svgX - (svgX - viewBox.x) * scale;
-        viewBox.y = svgY - (svgY - viewBox.y) * scale;
-        viewBox.width *= scale;
-        viewBox.height *= scale;
-    
+      
+        const svgX = viewBox.x + (mouseX / svgWidth) * viewBox.width;
+        const svgY = viewBox.y + (mouseY / svgHeight) * viewBox.height;
+      
+        // Calculamos el nuevo tamaño tras aplicar zoom
+        let newWidth = viewBox.width * scale;
+        let newHeight = viewBox.height * scale;
+      
+        // Definimos el tamaño máximo que puede tener el viewBox (el tamaño total del grid)
+        const maxWidth = gridSize.width * cellSize;
+        const maxHeight = gridSize.height * cellSize;
+      
+        // Si el nuevo tamaño es mayor al máximo, lo limitamos para que no se aleje más
+        if (newWidth > maxWidth) newWidth = maxWidth;
+        if (newHeight > maxHeight) newHeight = maxHeight;
+      
+        // Ajustamos la posición para mantener el zoom centrado en el mouse
+        viewBox.x = svgX - ((svgX - viewBox.x) * (newWidth / viewBox.width));
+        viewBox.y = svgY - ((svgY - viewBox.y) * (newHeight / viewBox.height));
+      
+        // Actualizamos el tamaño del viewBox
+        viewBox.width = newWidth;
+        viewBox.height = newHeight;
+      
         updateViewBox();
       };
+      
     
       const handleMouseDown = (e) => {
         if (e.button === 1) {
@@ -406,18 +421,28 @@ export const LayoutGrid = ({
 
     // Event handlers
     const getGridCoordinates = useCallback((e) => {
-      if (!svgRef.current) return { x: 0, y: 0 };
-      const rect = svgRef.current.getBoundingClientRect();
-      const x = Math.min(
-        Math.floor((e.clientX - rect.left) / cellSize), 
-        gridSize.width - 1
-      );
-      const y = Math.min(
-        Math.floor((e.clientY - rect.top) / cellSize), 
-        gridSize.height - 1
-      );
+      const svg = svgRef.current;
+      if (!svg) return { x: 0, y: 0 };
+    
+      const rect = svg.getBoundingClientRect();
+    
+      // Leemos el viewBox actual directamente del atributo
+      const [viewBoxX, viewBoxY, viewBoxWidth, viewBoxHeight] = svg
+        .getAttribute("viewBox")
+        .split(" ")
+        .map(Number);
+    
+      // Convertimos las coordenadas del mouse a coordenadas SVG
+      const svgX = ((e.clientX - rect.left) / rect.width) * viewBoxWidth + viewBoxX;
+      const svgY = ((e.clientY - rect.top) / rect.height) * viewBoxHeight + viewBoxY;
+    
+      const x = Math.min(Math.floor(svgX / cellSize), gridSize.width - 1);
+      const y = Math.min(Math.floor(svgY / cellSize), gridSize.height - 1);
+    
       return { x, y };
     }, [cellSize, gridSize.width, gridSize.height]);
+    
+    
 
     const getCursorStyle = useCallback(() => {
       if (moveMode.active) return 'cursor-crosshair';
