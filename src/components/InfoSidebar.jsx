@@ -16,7 +16,7 @@ export const InfoSidebar = ({
 
   if (!displayElement) {
     return (
-      <Card className="w-80 p-4 flex items-center justify-center flex-shrink-0">
+      <Card className="w-full h-full p-4 flex items-center justify-center flex-shrink-0">
         <div className="text-center p-8">
           <div className="w-16 h-16 mx-auto mb-4 bg-gray-200 rounded-full flex items-center justify-center">
             <svg 
@@ -43,9 +43,9 @@ export const InfoSidebar = ({
   }
 
   return (
-    <Card className="w-80 p-4 flex flex-col h-full flex-shrink-0">
+    <Card className="w-full h-full p-4 flex flex-col flex-shrink-0">
       {/* Header */}
-      <div className="flex items-center justify-between pb-4 border-b border-gray-200">
+      <div className="flex items-center justify-between pb-4 border-b border-gray-200 flex-shrink-0">
         <h3 className="text-lg font-semibold">
           {displayElement.type === 'machine' ? 'Machine Details' : 'Section Details'}
         </h3>
@@ -61,7 +61,7 @@ export const InfoSidebar = ({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto min-h-0">
         <InfoPanel
           hoveredInfo={hoveredElement}
           selectedElement={selectedElement}

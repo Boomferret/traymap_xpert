@@ -1,11 +1,18 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
+import { Card } from './ui/Card';
+import { Button } from './ui/Button';
 
-export const InfoPanel = ({ hoveredInfo, selectedElement, onClose, onCableHover }) => {
+export const InfoPanel = ({ 
+  selectedElement, 
+  hoveredElement, 
+  onClose, 
+  onCableHover 
+}) => {
   const [activeTab, setActiveTab] = useState('info');
-  const info = selectedElement || hoveredInfo;
+  const displayElement = selectedElement || hoveredElement;
 
   // Move getCableStatus outside of renderCableDetails
   const getCableStatus = (cable) => {
@@ -40,7 +47,16 @@ export const InfoPanel = ({ hoveredInfo, selectedElement, onClose, onCableHover 
     }
   };
 
-  if (!info || !info.data) return null;
+  if (!displayElement) {
+    return (
+      <Card className="w-full h-full p-4 flex items-center justify-center flex-shrink-0">
+        <div className="text-center text-gray-500">
+          <p className="text-lg font-medium">No Selection</p>
+          <p className="text-sm">Click on an element to view details</p>
+        </div>
+      </Card>
+    );
+  }
 
   const renderCableDetails = (section) => {
     if (!section || !section.cables) return null;
@@ -435,22 +451,58 @@ export const InfoPanel = ({ hoveredInfo, selectedElement, onClose, onCableHover 
   };
 
   return (
-    <div className="w-full h-full bg-white rounded-lg overflow-hidden flex flex-col">
-      <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-        <h3 className="font-semibold text-gray-900">
-          {info.type === 'machine' ? `Machine ${info.data.name}` : 'Cable Section Details'}
+    <Card className="w-full h-full p-4 flex flex-col flex-shrink-0">
+      <div className="flex items-center justify-between mb-4 flex-shrink-0">
+        <h3 className="text-lg font-semibold capitalize">
+          {displayElement.type} Details
         </h3>
-        {selectedElement && (
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-xl font-bold w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100">
-            ×
-          </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          className="h-8 w-8 p-0"
+        >
+          ×
+        </Button>
+      </div>
+
+      {/* Tab Navigation */}
+      <div className="flex gap-2 mb-4 border-b flex-shrink-0">
+        <Button
+          variant={activeTab === 'info' ? 'default' : 'ghost'}
+          size="sm"
+          onClick={() => setActiveTab('info')}
+          className="rounded-b-none"
+        >
+          Information
+        </Button>
+        {displayElement.type === 'machine' && displayElement.cables && displayElement.cables.length > 0 && (
+          <Button
+            variant={activeTab === 'cables' ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => setActiveTab('cables')}
+            className="rounded-b-none"
+          >
+            Cables ({displayElement.cables.length})
+          </Button>
         )}
       </div>
-      
-      <div className="flex-1 p-4 overflow-hidden">
-        {info.type === 'machine' ? renderMachineDetails(info.data) : renderCableDetails(info.data)}
+
+      {/* Tab Content */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {activeTab === 'info' && (
+          <div className="space-y-3">
+            {displayElement.type === 'machine' ? renderMachineDetails(displayElement.data) : renderCableDetails(displayElement.data)}
+          </div>
+        )}
+
+        {activeTab === 'cables' && displayElement.type === 'machine' && (
+          <div className="space-y-3">
+            {renderCableDetails(displayElement.data)}
+          </div>
+        )}
       </div>
-    </div>
+    </Card>
   );
 };
 
@@ -460,3 +512,5 @@ InfoPanel.propTypes = {
   onClose: PropTypes.func.isRequired,
   onCableHover: PropTypes.func.isRequired,
 };
+
+export default InfoPanel;

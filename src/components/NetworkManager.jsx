@@ -75,7 +75,7 @@ export const NetworkManager = ({ cableFunctions, onNetworksChange }) => {
 
   return (
     <div className="space-y-4">
-      <div className="fixed justify-between items-center">
+      <div className="flex justify-between items-center">
         <h2 className="text-lg font-semibold">Cable Networks</h2>
         <Button onClick={addNetwork} size="sm">
           <Plus className="h-4 w-4 mr-1" />

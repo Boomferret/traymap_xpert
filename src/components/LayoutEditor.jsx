@@ -147,6 +147,112 @@ export const LayoutEditor = () => {
   const [networkConfigCollapsed, setNetworkConfigCollapsed] = useState(false);
   const [cableSearchTerm, setCableSearchTerm] = useState('');
 
+  // Dynamic canvas sizing state
+  const [canvasContainerSize, setCanvasContainerSize] = useState({ width: 800, height: 600 });
+
+  // Calculate optimal canvas container size
+  const calculateCanvasSize = useCallback(() => {
+    // Calculate available space more dynamically
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    
+    // Reserve space for sidebars and padding
+    const leftSidebarWidth = sidebarCollapsed ? 16 + 32 : 320 + 32; // width + padding
+    const networkPanelWidth = 288 + 32; // width + padding
+    const rightSidebarWidth = 256 + 32; // min-width + padding
+    const horizontalPadding = 64; // additional margins
+    
+    // Calculate dynamic vertical padding based on actual content
+    let verticalPadding = 120; // base toolbar + header
+    if (showCableList) {
+      verticalPadding += 400; // cable list takes up space
+    }
+    if (!networkConfigCollapsed && networks.length > 0) {
+      verticalPadding += 300; // networks config takes space
+    } else if (networks.length > 0) {
+      verticalPadding += 80; // collapsed networks config header
+    }
+    
+    const availableWidth = viewportWidth - leftSidebarWidth - networkPanelWidth - rightSidebarWidth - horizontalPadding;
+    const availableHeight = viewportHeight - verticalPadding;
+    
+    const minWidth = 400;
+    const maxWidth = Math.max(minWidth, availableWidth);
+    const minHeight = 300;
+    const maxHeight = Math.max(minHeight, availableHeight);
+     
+    let optimalWidth = 800; // default
+    let optimalHeight = 600; // default
+     
+    // If there's a background image, try to size based on it
+    if (canvasConfig.backgroundImage) {
+      if (typeof canvasConfig.backgroundImage === 'object' && 
+          canvasConfig.backgroundImage.originalWidth && 
+          canvasConfig.backgroundImage.originalHeight) {
+        // Calculate size to fit the entire image while maintaining aspect ratio
+        const imageAspectRatio = canvasConfig.backgroundImage.originalWidth / canvasConfig.backgroundImage.originalHeight;
+        const availableAspectRatio = availableWidth / availableHeight;
+        
+        // Fit image to available space while maintaining aspect ratio
+        if (imageAspectRatio > availableAspectRatio) {
+          // Image is wider relative to available space - fit to width
+          optimalWidth = Math.min(maxWidth, availableWidth * 0.98);
+          optimalHeight = Math.min(maxHeight, optimalWidth / imageAspectRatio);
+        } else {
+          // Image is taller relative to available space - fit to height
+          optimalHeight = Math.min(maxHeight, availableHeight * 0.98);
+          optimalWidth = Math.min(maxWidth, optimalHeight * imageAspectRatio);
+        }
+      } else {
+        // For base64 images without dimensions, use available space with grid proportions
+        const gridAspectRatio = canvasConfig.width / canvasConfig.height;
+        if (gridAspectRatio > availableWidth / availableHeight) {
+          optimalWidth = Math.min(maxWidth, availableWidth * 0.95);
+          optimalHeight = Math.min(maxHeight, optimalWidth / gridAspectRatio);
+        } else {
+          optimalHeight = Math.min(maxHeight, availableHeight * 0.95);
+          optimalWidth = Math.min(maxWidth, optimalHeight * gridAspectRatio);
+        }
+      }
+    } else {
+      // No background image, size based on grid content and available space
+      const gridAspectRatio = canvasConfig.width / canvasConfig.height;
+      if (gridAspectRatio > availableWidth / availableHeight) {
+        optimalWidth = Math.min(maxWidth, availableWidth * 0.9);
+        optimalHeight = Math.min(maxHeight, optimalWidth / gridAspectRatio);
+      } else {
+        optimalHeight = Math.min(maxHeight, availableHeight * 0.9);
+        optimalWidth = Math.min(maxWidth, optimalHeight * gridAspectRatio);
+      }
+    }
+     
+    // Ensure minimum sizes
+    optimalWidth = Math.max(minWidth, optimalWidth);
+    optimalHeight = Math.max(minHeight, optimalHeight);
+    
+    return {
+      width: Math.round(optimalWidth),
+      height: Math.round(optimalHeight)
+    };
+  }, [canvasConfig, sidebarCollapsed, showCableList, networkConfigCollapsed, networks.length]);
+
+  // Update canvas size when config changes
+  useEffect(() => {
+    const newSize = calculateCanvasSize();
+    setCanvasContainerSize(newSize);
+  }, [calculateCanvasSize]);
+
+  // Recalculate on window resize
+  useEffect(() => {
+    const handleResize = () => {
+      const newSize = calculateCanvasSize();
+      setCanvasContainerSize(newSize);
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [calculateCanvasSize]);
+
   const markForOptimization = useCallback(() => {
     setNeedsOptimization(true);
   }, []);
@@ -1285,7 +1391,7 @@ export const LayoutEditor = () => {
 
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-screen overflow-hidden">
       <InitialSetupModal
         isOpen={showInitialSetup}
         onClose={() => setShowInitialSetup(false)}
@@ -1293,7 +1399,7 @@ export const LayoutEditor = () => {
       />
 
       {/* Top toolbar */}
-      <div className="flex justify-between items-center p-4 bg-white border-b border-gray-200">
+      <div className="flex justify-between items-center p-3 bg-white border-b border-gray-200 flex-shrink-0">
         <input
           type="file"
           accept=".csv"
@@ -1336,7 +1442,7 @@ export const LayoutEditor = () => {
 
       {/* Loading indicator with cancel option */}
       {isLoading && (
-        <div className="p-3 bg-blue-50 border-b border-blue-200">
+        <div className="p-2 bg-blue-50 border-b border-blue-200 flex-shrink-0">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></div>
@@ -1366,7 +1472,7 @@ export const LayoutEditor = () => {
 
       {/* Error indicator */}
       {error && (
-        <div className="p-3 bg-red-50 border-b border-red-200">
+        <div className="p-2 bg-red-50 border-b border-red-200 flex-shrink-0">
           <div className="flex items-center justify-between">
             <span className="text-sm text-red-700">{error}</span>
             <Button
@@ -1383,9 +1489,9 @@ export const LayoutEditor = () => {
 
       {/* Cable list table */}
       {showCableList && (importedCables.length > 0 || cables.length > 0) && (
-        <Card className="m-4 p-4 flex flex-col max-h-96">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold">
+        <Card className="mx-4 mb-2 p-3 flex flex-col flex-shrink-0" style={{ maxHeight: '300px' }}>
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="text-base font-semibold">
               Cable List ({filteredCables.length} / {(importedCables.length > 0 ? importedCables : cables).length} cables)
             </h3>
             <Button
@@ -1402,7 +1508,7 @@ export const LayoutEditor = () => {
           </div>
           
           {/* Cable search input */}
-          <div className="mb-4">
+          <div className="mb-3">
             <div className="relative">
               <Input
                 type="text"
@@ -1493,50 +1599,325 @@ export const LayoutEditor = () => {
         </Card>
       )}
 
-      {/* Main horizontal layout */}
-      <div className="flex flex-1 min-h-0 p-4 gap-4">
-        {/* Left sidebar - Machine list and tools */}
-        <Card className={`${sidebarCollapsed ? 'w-16' : 'w-80'} p-4 flex flex-col transition-all duration-300 relative flex-shrink-0`}>
-          {/* Collapse/Expand Button */}
-          <Button
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            variant="ghost"
-            size="sm"
-            className="absolute top-2 right-2 z-10"
-            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            {sidebarCollapsed ? (
-              <ChevronRight className="h-4 w-4" />
-            ) : (
-              <ChevronLeft className="h-4 w-4" />
-            )}
-          </Button>
+      {/* Main content area - use remaining space */}
+      <div className="flex flex-1 min-h-0">
+        {/* Main horizontal layout */}
+        <div className="flex flex-1 min-h-0 gap-4" style={{ padding: "8px 16px" }}>
+          {/* Left sidebar - Machine list and tools */}
+          <Card className={`${sidebarCollapsed ? 'w-16' : 'w-80'} p-4 flex flex-col transition-all duration-300 relative flex-shrink-0 min-w-16`}>
+            {/* Collapse/Expand Button */}
+            <Button
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              variant="ghost"
+              size="sm"
+              className="absolute top-2 right-2 z-10"
+              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {sidebarCollapsed ? (
+                <ChevronRight className="h-4 w-4" />
+              ) : (
+                <ChevronLeft className="h-4 w-4" />
+              )}
+            </Button>
 
-          {!sidebarCollapsed && (
-            <>
-              <div className="flex gap-2 mb-4 pb-4 border-b justify-center">
+            {!sidebarCollapsed && (
+              <>
+                <div className="flex gap-2 mb-4 pb-4 border-b justify-center">
+                  <Button
+                    onClick={handleExport}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2"
+                    title="Export layout to JSON"
+                  >
+                    <Download className="h-4 w-4" />
+                    Export
+                  </Button>
+
+                  <Button
+                    onClick={() => fileInputRef.current.click()}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2"
+                    title="Import layout from JSON"
+                  >
+                    <Upload className="h-4 w-4" />
+                    Import
+                  </Button>
+
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept="application/json"
+                    style={{ display: 'none' }}
+                    onChange={handleImport}
+                  />
+                </div>
+
+                <div className="flex gap-2 mb-4 pb-4 border-b justify-center">
+                  <Button
+                    variant={editorMode === EditorModes.PAN ? "secondary" : "outline"}
+                    size="icon"
+                    onClick={() => {
+                      setEditorMode(EditorModes.PAN);
+                      setSelectedMachine(null);
+                    }}
+                    title="Pan Canvas"
+                    className="w-10 h-10"
+                  >
+                    <Squirrel className="h-5 w-5" />
+                  </Button>
+                  <Button
+                    variant={editorMode === EditorModes.WALL ? "secondary" : "outline"}
+                    size="icon"
+                    onClick={() => {
+                      setEditorMode(EditorModes.WALL);
+                      setSelectedMachine(null);
+                    }}
+                    title="Draw Walls"
+                    className="w-10 h-10"
+                  >
+                    <Blocks className="h-5 w-5" />
+                  </Button>
+                  <Button
+                    variant={editorMode === EditorModes.TRAY ? "secondary" : "outline"}
+                    size="icon"
+                    onClick={() => {
+                      setEditorMode(EditorModes.TRAY);
+                      setSelectedMachine(null);
+                    }}
+                    title="Draw Tray"
+                    className="w-10 h-10"
+                  >
+                    <Wrench className="h-5 w-5" />
+                  </Button>
+                  <Button
+                    variant={editorMode === EditorModes.PERFORATION ? "secondary" : "outline"}
+                    size="icon"
+                    onClick={() => {
+                      setEditorMode(EditorModes.PERFORATION);
+                      setSelectedMachine(null);
+                    }}
+                    title="Add Perforations"
+                    className="w-10 h-10"
+                  >
+                    <CircleDot className="h-5 w-5" />
+                  </Button>
+                  <Button
+                    variant={editorMode === EditorModes.DELETE ? "secondary" : "outline"}
+                    size="icon"
+                    onClick={() => {
+                      setEditorMode(EditorModes.DELETE);
+                      setSelectedMachine(null);
+                    }}
+                    title="Delete Walls and Trays"
+                    className="w-10 h-10"
+                  >
+                    <Tractor className="h-5 w-5" />
+                  </Button>
+                </div>
+
+                <div className="text-sm font-medium mb-2">Available Machines</div>
+                
+                {/* Machine search input */}
+                <div className="mb-3">
+                  <div className="relative">
+                    <Input
+                      type="text"
+                      placeholder="Search machines by name or description..."
+                      value={machineSearchTerm}
+                      onChange={(e) => setMachineSearchTerm(e.target.value)}
+                      className="text-sm pl-8 pr-8"
+                    />
+                    <svg
+                      className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                      />
+                    </svg>
+                    {machineSearchTerm && (
+                      <button
+                        onClick={() => setMachineSearchTerm('')}
+                        className="absolute right-2.5 top-2.5 h-4 w-4 text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="flex-1 min-h-0 border rounded-md p-2 overflow-y-auto">
+                  <div className="grid gap-2">
+                    {filteredAvailableMachines.map((machine) => (
+                      <div
+                        key={machine.name}
+                        onClick={() => {
+                          if (inheritMode.active) {
+                            handleMachineInherit(inheritMode.targetMachine, machine.name);
+                            setInheritMode({ active: false, targetMachine: null });
+                            // Remove the machine from available machines since it's now merged
+                            setAvailableMachines(prev => prev.filter(m => m.name !== machine.name));
+                          } else {
+                            handleMachineSelect(machine);
+                          }
+                        }}
+                        className={`flex items-center gap-2 p-2 rounded-md border transition-colors ${selectedMachine?.name === machine.name
+                          ? 'bg-accent text-accent-foreground border-accent'
+                          : inheritMode.active
+                            ? 'bg-background hover:bg-blue-50 cursor-copy'
+                            : 'bg-background hover:bg-accent/50 cursor-pointer'
+                          }`}
+                      >
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-medium ${inheritMode.active ? 'bg-blue-500' : 'bg-green-500'
+                          }`}>
+                          {machine.name}
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium">{machine.name}</span>
+                          {machine.description && (
+                            <span className="text-xs text-gray-500">{machine.description}</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {filteredAvailableMachines.length === 0 && (
+                      <div className="text-sm text-gray-500 p-2 text-center">
+                        {machineSearchTerm.trim() 
+                          ? `No machines found matching "${machineSearchTerm}"`
+                          : "All machines have been placed"
+                        }
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Add an indicator when in inherit mode */}
+                {inheritMode.active && (
+                  <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                        <span className="text-sm text-blue-700">Select a machine to inherit from</span>
+                      </div>
+                      <button
+                        onClick={() => setInheritMode({ active: false, targetMachine: null })}
+                        className="text-blue-500 hover:text-blue-700 text-sm"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {Object.keys(machines).length >= 2 && (
+                  <div className="mt-4 p-3 border rounded-md bg-gray-50">
+                    <div className="text-sm font-medium mb-2">Cable Stats</div>
+                    <div className="text-sm space-y-1.5">
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-600">Total Cables:</span>
+                        <span className="font-medium bg-gray-100 px-2 py-0.5 rounded">
+                          {cables.length}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Collapsed sidebar view */}
+            {sidebarCollapsed && (
+              <div className="flex flex-col gap-2 mt-8 items-center">
                 <Button
                   onClick={handleExport}
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  className="flex items-center gap-2"
-                  title="Export layout to JSON"
+                  className="w-10 h-10 p-0"
+                  title="Export layout"
                 >
                   <Download className="h-4 w-4" />
-                  Export
                 </Button>
-
                 <Button
                   onClick={() => fileInputRef.current.click()}
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  className="flex items-center gap-2"
-                  title="Import layout from JSON"
+                  className="w-10 h-10 p-0"
+                  title="Import layout"
                 >
                   <Upload className="h-4 w-4" />
-                  Import
                 </Button>
-
+                
+                {/* All editing tools */}
+                <div className="border-t pt-2 mt-2 flex flex-col gap-1">
+                  <Button
+                    variant={editorMode === EditorModes.PAN ? "secondary" : "ghost"}
+                    size="sm"
+                    onClick={() => {
+                      setEditorMode(EditorModes.PAN);
+                      setSelectedMachine(null);
+                    }}
+                    title="Pan Canvas"
+                    className="w-10 h-10 p-0"
+                  >
+                    <Squirrel className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant={editorMode === EditorModes.WALL ? "secondary" : "ghost"}
+                    size="sm"
+                    onClick={() => {
+                      setEditorMode(EditorModes.WALL);
+                      setSelectedMachine(null);
+                    }}
+                    title="Draw Walls"
+                    className="w-10 h-10 p-0"
+                  >
+                    <Blocks className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant={editorMode === EditorModes.TRAY ? "secondary" : "ghost"}
+                    size="sm"
+                    onClick={() => {
+                      setEditorMode(EditorModes.TRAY);
+                      setSelectedMachine(null);
+                    }}
+                    title="Draw Tray"
+                    className="w-10 h-10 p-0"
+                  >
+                    <Wrench className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant={editorMode === EditorModes.PERFORATION ? "secondary" : "ghost"}
+                    size="sm"
+                    onClick={() => {
+                      setEditorMode(EditorModes.PERFORATION);
+                      setSelectedMachine(null);
+                    }}
+                    title="Add Perforations"
+                    className="w-10 h-10 p-0"
+                  >
+                    <CircleDot className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant={editorMode === EditorModes.DELETE ? "secondary" : "ghost"}
+                    size="sm"
+                    onClick={() => {
+                      setEditorMode(EditorModes.DELETE);
+                      setSelectedMachine(null);
+                    }}
+                    title="Delete Walls and Trays"
+                    className="w-10 h-10 p-0"
+                  >
+                    <Tractor className="h-4 w-4" />
+                  </Button>
+                </div>
+                
                 <input
                   type="file"
                   ref={fileInputRef}
@@ -1545,476 +1926,221 @@ export const LayoutEditor = () => {
                   onChange={handleImport}
                 />
               </div>
+            )}
+          </Card>
 
-              <div className="flex gap-2 mb-4 pb-4 border-b justify-center">
-                <Button
-                  variant={editorMode === EditorModes.PAN ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => {
-                    setEditorMode(EditorModes.PAN);
-                    setSelectedMachine(null);
-                  }}
-                  title="Pan Canvas"
-                  className="w-10 h-10"
-                >
-                  <Squirrel className="h-5 w-5" />
-                </Button>
-                <Button
-                  variant={editorMode === EditorModes.WALL ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => {
-                    setEditorMode(EditorModes.WALL);
-                    setSelectedMachine(null);
-                  }}
-                  title="Draw Walls"
-                  className="w-10 h-10"
-                >
-                  <Blocks className="h-5 w-5" />
-                </Button>
-                <Button
-                  variant={editorMode === EditorModes.TRAY ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => {
-                    setEditorMode(EditorModes.TRAY);
-                    setSelectedMachine(null);
-                  }}
-                  title="Draw Tray"
-                  className="w-10 h-10"
-                >
-                  <Wrench className="h-5 w-5" />
-                </Button>
-                <Button
-                  variant={editorMode === EditorModes.PERFORATION ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => {
-                    setEditorMode(EditorModes.PERFORATION);
-                    setSelectedMachine(null);
-                  }}
-                  title="Add Perforations"
-                  className="w-10 h-10"
-                >
-                  <CircleDot className="h-5 w-5" />
-                </Button>
-                <Button
-                  variant={editorMode === EditorModes.DELETE ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => {
-                    setEditorMode(EditorModes.DELETE);
-                    setSelectedMachine(null);
-                  }}
-                  title="Delete Walls and Trays"
-                  className="w-10 h-10"
-                >
-                  <Tractor className="h-5 w-5" />
-                </Button>
-              </div>
+          {/* Network Panel */}
+          <NetworkPanel
+            className="w-72 flex-shrink min-w-48"
+            networks={networks}
+            networkVisibility={networkVisibility}
+            onNetworkVisibilityChange={setNetworkVisibility}
+            hoveredNetwork={hoveredNetwork}
+            onNetworkHover={setHoveredNetwork}
+            backendSections={backendSections}
+          />
 
-              <div className="text-sm font-medium mb-2">Available Machines</div>
-              
-              {/* Machine search input */}
-              <div className="mb-3">
-                <div className="relative">
-                  <Input
-                    type="text"
-                    placeholder="Search machines by name or description..."
-                    value={machineSearchTerm}
-                    onChange={(e) => setMachineSearchTerm(e.target.value)}
-                    className="text-sm pl-8 pr-8"
-                  />
-                  <svg
-                    className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                    />
-                  </svg>
-                  {machineSearchTerm && (
-                    <button
-                      onClick={() => setMachineSearchTerm('')}
-                      className="absolute right-2.5 top-2.5 h-4 w-4 text-gray-400 hover:text-gray-600"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
-              
-              <div className="flex-1 min-h-0 border rounded-md p-2 overflow-y-auto" style={{ maxHeight: '1200px' }}>
-                <div className="grid gap-2">
-                  {filteredAvailableMachines.map((machine) => (
-                    <div
-                      key={machine.name}
-                      onClick={() => {
-                        if (inheritMode.active) {
-                          handleMachineInherit(inheritMode.targetMachine, machine.name);
-                          setInheritMode({ active: false, targetMachine: null });
-                          // Remove the machine from available machines since it's now merged
-                          setAvailableMachines(prev => prev.filter(m => m.name !== machine.name));
-                        } else {
-                          handleMachineSelect(machine);
-                        }
-                      }}
-                      className={`flex items-center gap-2 p-2 rounded-md border transition-colors ${selectedMachine?.name === machine.name
-                        ? 'bg-accent text-accent-foreground border-accent'
-                        : inheritMode.active
-                          ? 'bg-background hover:bg-blue-50 cursor-copy'
-                          : 'bg-background hover:bg-accent/50 cursor-pointer'
-                        }`}
-                    >
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-medium ${inheritMode.active ? 'bg-blue-500' : 'bg-green-500'
-                        }`}>
-                        {machine.name}
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-sm font-medium">{machine.name}</span>
-                        {machine.description && (
-                          <span className="text-xs text-gray-500">{machine.description}</span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                  {filteredAvailableMachines.length === 0 && (
-                    <div className="text-sm text-gray-500 p-2 text-center">
-                      {machineSearchTerm.trim() 
-                        ? `No machines found matching "${machineSearchTerm}"`
-                        : "All machines have been placed"
-                      }
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Add an indicator when in inherit mode */}
-              {inheritMode.active && (
-                <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-                      <span className="text-sm text-blue-700">Select a machine to inherit from</span>
-                    </div>
-                    <button
-                      onClick={() => setInheritMode({ active: false, targetMachine: null })}
-                      className="text-blue-500 hover:text-blue-700 text-sm"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {Object.keys(machines).length >= 2 && (
-                <div className="mt-4 p-3 border rounded-md bg-gray-50">
-                  <div className="text-sm font-medium mb-2">Cable Stats</div>
-                  <div className="text-sm space-y-1.5">
-                    <div className="flex justify-between items-center">
-                      <span className="text-gray-600">Total Cables:</span>
-                      <span className="font-medium bg-gray-100 px-2 py-0.5 rounded">
-                        {cables.length}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Collapsed sidebar view */}
-          {sidebarCollapsed && (
-            <div className="flex flex-col gap-2 mt-8 items-center">
-              <Button
-                onClick={handleExport}
-                variant="ghost"
-                size="sm"
-                className="w-10 h-10 p-0"
-                title="Export layout"
-              >
-                <Download className="h-4 w-4" />
-              </Button>
-              <Button
-                onClick={() => fileInputRef.current.click()}
-                variant="ghost"
-                size="sm"
-                className="w-10 h-10 p-0"
-                title="Import layout"
-              >
-                <Upload className="h-4 w-4" />
-              </Button>
-              
-              {/* All editing tools */}
-              <div className="border-t pt-2 mt-2 flex flex-col gap-1">
-                <Button
-                  variant={editorMode === EditorModes.PAN ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => {
-                    setEditorMode(EditorModes.PAN);
-                    setSelectedMachine(null);
-                  }}
-                  title="Pan Canvas"
-                  className="w-10 h-10 p-0"
-                >
-                  <Squirrel className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={editorMode === EditorModes.WALL ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => {
-                    setEditorMode(EditorModes.WALL);
-                    setSelectedMachine(null);
-                  }}
-                  title="Draw Walls"
-                  className="w-10 h-10 p-0"
-                >
-                  <Blocks className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={editorMode === EditorModes.TRAY ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => {
-                    setEditorMode(EditorModes.TRAY);
-                    setSelectedMachine(null);
-                  }}
-                  title="Draw Tray"
-                  className="w-10 h-10 p-0"
-                >
-                  <Wrench className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={editorMode === EditorModes.PERFORATION ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => {
-                    setEditorMode(EditorModes.PERFORATION);
-                    setSelectedMachine(null);
-                  }}
-                  title="Add Perforations"
-                  className="w-10 h-10 p-0"
-                >
-                  <CircleDot className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={editorMode === EditorModes.DELETE ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => {
-                    setEditorMode(EditorModes.DELETE);
-                    setSelectedMachine(null);
-                  }}
-                  title="Delete Walls and Trays"
-                  className="w-10 h-10 p-0"
-                >
-                  <Tractor className="h-4 w-4" />
-                </Button>
-              </div>
-              
-              <input
-                type="file"
-                ref={fileInputRef}
-                accept="application/json"
-                style={{ display: 'none' }}
-                onChange={handleImport}
+          {/* Main Canvas Area */}
+          <div 
+            className="flex-grow flex-shrink-0 p-2"
+            style={{ 
+              width: `${canvasContainerSize.width + 16}px`, // padding included
+              maxWidth: `${canvasContainerSize.width + 16}px`
+            }}
+          >
+            <div 
+              className="bg-white rounded-lg shadow-sm border overflow-hidden"
+              style={{ 
+                width: `${canvasContainerSize.width}px`,
+                height: `${canvasContainerSize.height}px`
+              }}
+            >
+              <LayoutGrid
+                gridSize={{
+                  width: canvasConfig.width * 10,
+                  height: canvasConfig.height * 10
+                }}
+                cellSize={10}
+                walls={walls}
+                perforations={perforations}
+                machines={machines}
+                cables={importedCables.length > 0 ? importedCables : cables}
+                networks={networks}
+                networkVisibility={networkVisibility}
+                activeMode={editorMode}
+                selectedMachine={selectedMachine}
+                onWallAdd={handleWallAdd}
+                onTrayAdd={handleTrayAdd}
+                onDelete={handleRemoveWallsAndTrays}
+                trays={trays}
+                onPerforationAdd={handlePerforationAdd}
+                onMachinePlace={handleMachinePlace}
+                onMachineMove={handleMachineMove}
+                onMachineRemove={handleMachineRemove}
+                onNetworkVisibilityChange={setNetworkVisibility}
+                backgroundImage={canvasConfig.backgroundImage}
+                onMachineInherit={handleMachineInherit}
+                backendSections={backendSections}
+                cableRoutes={cableRoutes}
+                hananGrid={hananGrid}
+                hoveredCable={hoveredCable}
+                onCableHover={setHoveredCable}
+                hoveredNetwork={hoveredNetwork}
+                onNetworkHover={setHoveredNetwork}
+                steinerPoints={steinerPoints}
+                selectedElement={selectedElement}
+                hoveredElement={hoveredElement}
+                onElementSelect={setSelectedElement}
               />
             </div>
-          )}
-        </Card>
+          </div>
 
-        {/* Network Panel */}
-        <NetworkPanel
-          className="w-72 flex-shrink-0"
-          networks={networks}
-          networkVisibility={networkVisibility}
-          onNetworkVisibilityChange={setNetworkVisibility}
-          hoveredNetwork={hoveredNetwork}
-          onNetworkHover={setHoveredNetwork}
-          backendSections={backendSections}
-        />
-
-        {/* Main Canvas Area */}
-        <div className="flex-1 min-w-0 p-4">
-          <div className="bg-white rounded-lg shadow-sm h-full">
-            <LayoutGrid
-              gridSize={{
-                width: canvasConfig.width * 10,
-                height: canvasConfig.height * 10
-              }}
-              cellSize={10}
-              walls={walls}
-              perforations={perforations}
-              machines={machines}
-              cables={importedCables.length > 0 ? importedCables : cables}
-              networks={networks}
-              networkVisibility={networkVisibility}
-              activeMode={editorMode}
-              selectedMachine={selectedMachine}
-              onWallAdd={handleWallAdd}
-              onTrayAdd={handleTrayAdd}
-              onDelete={handleRemoveWallsAndTrays}
-              trays={trays}
-              onPerforationAdd={handlePerforationAdd}
-              onMachinePlace={handleMachinePlace}
-              onMachineMove={handleMachineMove}
-              onMachineRemove={handleMachineRemove}
-              onNetworkVisibilityChange={setNetworkVisibility}
-              backgroundImage={canvasConfig.backgroundImage}
-              onMachineInherit={handleMachineInherit}
-              backendSections={backendSections}
-              cableRoutes={cableRoutes}
-              hananGrid={hananGrid}
-              hoveredCable={hoveredCable}
-              onCableHover={setHoveredCable}
-              hoveredNetwork={hoveredNetwork}
-              onNetworkHover={setHoveredNetwork}
-              steinerPoints={steinerPoints}
-              selectedElement={selectedElement}
-              hoveredElement={hoveredElement}
-              onElementSelect={setSelectedElement}
+          {/* Right Info Sidebar */}
+          <div className="flex flex-col min-w-48 max-w-96 h-full">
+            <InfoSidebar
+            selectedElement={selectedElement}
+            hoveredElement={hoveredElement}
+            onClose={() => setSelectedElement(null)}
+            onCableHover={setHoveredCable}
             />
           </div>
         </div>
-
-        {/* Right Info Sidebar */}
-        <InfoSidebar
-          selectedElement={selectedElement}
-          hoveredElement={hoveredElement}
-          onClose={() => setSelectedElement(null)}
-          onCableHover={setHoveredCable}
-        />
       </div>
 
-      {/* Networks Configuration Section - moved to bottom */}
+      {/* Networks Configuration Section - Fixed at bottom */}
       {networks.length > 0 && (
-        <Card className="m-4 p-4">
-          <div className="space-y-4">
-            <div className="flex justify-between items-center">
-              <h2 className="text-lg font-semibold">Cable Networks Configuration</h2>
-              <div className="flex gap-2">
-                {networks.length < MAX_NETWORKS && (
-                  <Button
-                    onClick={handleAddNetwork}
-                    size="sm"
-                    className="gap-1"
-                  >
-                    <Plus className="h-4 w-4" />
-                    Add Network
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setNetworkConfigCollapsed(!networkConfigCollapsed)}
-                >
-                  {networkConfigCollapsed ? (
-                    <ChevronRight className="h-4 w-4" />
-                  ) : (
-                    <ChevronLeft className="h-4 w-4" />
+        <div className="border-t bg-white flex-shrink-0">
+          <Card className="mx-4 my-3 p-3">
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <h2 className="text-base font-semibold">Cable Networks Configuration</h2>
+                <div className="flex gap-2">
+                  {networks.length < MAX_NETWORKS && (
+                    <Button
+                      onClick={handleAddNetwork}
+                      size="sm"
+                      className="gap-1"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Add Network
+                    </Button>
                   )}
-                </Button>
-              </div>
-            </div>
-
-            {!networkConfigCollapsed && (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {networks.map((network) => (
-                    <Card key={network.id} className="p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2 flex-1">
-                          <div className="flex items-center gap-2">
-                            <div
-                              className={`w-4 h-4 rounded-full transition-transform ${hoveredNetwork === network.name ? 'scale-125' : ''
-                                }`}
-                              style={{ backgroundColor: network.color }}
-                              onMouseEnter={() => setHoveredNetwork(network.name)}
-                              onMouseLeave={() => setHoveredNetwork(null)}
-                            />
-                            {network.isDefault ? (
-                              <span className="font-medium">{network.name}</span>
-                            ) : (
-                              <Input
-                                value={network.name}
-                                onChange={(e) => {
-                                  const updated = networks.map(n =>
-                                    n.id === network.id
-                                      ? { ...n, name: e.target.value }
-                                      : n
-                                  );
-                                  handleNetworksChange(updated);
-                                }}
-                                className="text-sm font-medium w-40"
-                              />
-                            )}
-                          </div>
-                        </div>
-                        {!network.isDefault && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleRemoveNetwork(network.id)}
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        )}
-                      </div>
-                      <div
-                        className="space-y-2 min-h-[100px] border-2 border-dashed rounded-lg p-2"
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          const functionName = e.dataTransfer.getData("function");
-                          if (functionName) {
-                            handleFunctionDrop(network.id, functionName);
-                          }
-                        }}
-                      >
-                        {network.functions.map((func) => (
-                          <div
-                            key={func}
-                            draggable
-                            onDragStart={(e) => e.dataTransfer.setData("function", func)}
-                            className="flex items-center gap-2 p-2 bg-gray-50 rounded border text-sm cursor-move group hover:bg-gray-100 transition-colors"
-                          >
-                            <GripVertical className="h-4 w-4 text-gray-400 opacity-0 group-hover:opacity-100" />
-                            <span>{func}</span>
-                          </div>
-                        ))}
-
-                        {network.functions.length === 0 && (
-                          <div className="h-full flex items-center justify-center text-sm text-gray-500">
-                            Drop cable functions here
-                          </div>
-                        )}
-                      </div>
-                    </Card>
-                  ))}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setNetworkConfigCollapsed(!networkConfigCollapsed)}
+                    title={networkConfigCollapsed ? 'Expand Networks Config' : 'Collapse Networks Config'}
+                  >
+                    {networkConfigCollapsed ? (
+                      <ChevronRight className="h-4 w-4" />
+                    ) : (
+                      <ChevronLeft className="h-4 w-4 rotate-90" />
+                    )}
+                  </Button>
                 </div>
+              </div>
 
-                {/* Available Functions Section */}
-                {importedCables.length > 0 && (
-                  <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                    <h3 className="text-sm font-medium mb-2">Available Functions</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {Array.from(new Set(importedCables.map(c => c.cableFunction)))
-                        .filter(func => !networks.some(n => n.functions.includes(func)))
-                        .map((func) => (
-                          <div
-                            key={func}
-                            draggable
-                            onDragStart={(e) => e.dataTransfer.setData('function', func)}
-                            className="px-2 py-1 bg-white rounded border text-sm cursor-move hover:bg-gray-50 transition-colors"
-                          >
-                            {func}
+              {!networkConfigCollapsed && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {networks.map((network) => (
+                      <Card key={network.id} className="p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2 flex-1">
+                            <div className="flex items-center gap-2">
+                              <div
+                                className={`w-4 h-4 rounded-full transition-transform ${hoveredNetwork === network.name ? 'scale-125' : ''
+                                  }`}
+                                style={{ backgroundColor: network.color }}
+                                onMouseEnter={() => setHoveredNetwork(network.name)}
+                                onMouseLeave={() => setHoveredNetwork(null)}
+                              />
+                              {network.isDefault ? (
+                                <span className="font-medium">{network.name}</span>
+                              ) : (
+                                <Input
+                                  value={network.name}
+                                  onChange={(e) => {
+                                    const updated = networks.map(n =>
+                                      n.id === network.id
+                                        ? { ...n, name: e.target.value }
+                                        : n
+                                    );
+                                    handleNetworksChange(updated);
+                                  }}
+                                  className="text-sm font-medium w-40"
+                                />
+                              )}
+                            </div>
                           </div>
-                        ))}
-                    </div>
+                          {!network.isDefault && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleRemoveNetwork(network.id)}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                        <div
+                          className="space-y-2 min-h-[100px] border-2 border-dashed rounded-lg p-2"
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            const functionName = e.dataTransfer.getData("function");
+                            if (functionName) {
+                              handleFunctionDrop(network.id, functionName);
+                            }
+                          }}
+                        >
+                          {network.functions.map((func) => (
+                            <div
+                              key={func}
+                              draggable
+                              onDragStart={(e) => e.dataTransfer.setData("function", func)}
+                              className="flex items-center gap-2 p-2 bg-gray-50 rounded border text-sm cursor-move group hover:bg-gray-100 transition-colors"
+                            >
+                              <GripVertical className="h-4 w-4 text-gray-400 opacity-0 group-hover:opacity-100" />
+                              <span>{func}</span>
+                            </div>
+                          ))}
+
+                          {network.functions.length === 0 && (
+                            <div className="h-full flex items-center justify-center text-sm text-gray-500">
+                              Drop cable functions here
+                            </div>
+                          )}
+                        </div>
+                      </Card>
+                    ))}
                   </div>
-                )}
-              </>
-            )}
-          </div>
-        </Card>
+
+                  {/* Available Functions Section */}
+                  {importedCables.length > 0 && (
+                    <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                      <h3 className="text-sm font-medium mb-2">Available Functions</h3>
+                      <div className="flex flex-wrap gap-2">
+                        {Array.from(new Set(importedCables.map(c => c.cableFunction)))
+                          .filter(func => !networks.some(n => n.functions.includes(func)))
+                          .map((func) => (
+                            <div
+                              key={func}
+                              draggable
+                              onDragStart={(e) => e.dataTransfer.setData('function', func)}
+                              className="px-2 py-1 bg-white rounded border text-sm cursor-move hover:bg-gray-50 transition-colors"
+                            >
+                              {func}
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </Card>
+        </div>
       )}
     </div>
   );
