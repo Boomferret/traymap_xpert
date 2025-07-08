@@ -1743,7 +1743,7 @@ export const LayoutEditor = () => {
                   </div>
                 </div>
                 
-                <div className="flex-1 min-h-0 border rounded-md p-2 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 500px)', minHeight: '200px' }}>
+                <div className="flex-1 min-h-0 border rounded-md p-2 overflow-y-auto">
                   <div className="grid gap-2">
                     {filteredAvailableMachines.map((machine) => (
                       <div
