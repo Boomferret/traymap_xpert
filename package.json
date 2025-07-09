@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && next export",
     "start": "next start",
-    "lint": "next lint",
-    "export": "next export"
+    "electron": "cross-env NODE_ENV=development electron electron/electron.js",
+    "electron:prod": "NODE_ENV=production electron electron/electron.js"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.0",
@@ -27,6 +27,8 @@
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^37.2.0",
     "eslint": "^8",
     "eslint-config-next": "15.0.3",
     "postcss": "^8",
