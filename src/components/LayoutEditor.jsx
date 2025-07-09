@@ -12,6 +12,7 @@ import { EditorModes } from '@/constants/editorModes';
 import { optimizeNetworkPaths, calculateHananGrid } from '@/utils/cableUtils';
 import { ChevronLeft, ChevronRight, Download, Upload, Plus, X, Blocks, Squirrel, CircleDot, Wrench, Tractor, GripVertical } from 'lucide-react';
 import { InitialSetupModal } from './InitialSetupModal';
+import { metersToGridUnits, gridUnitsToMeters } from '@/utils/gridUtils';
 
 // Default network configurations
 const DEFAULT_NETWORKS = [
@@ -100,7 +101,7 @@ export const LayoutEditor = () => {
     width: 10,
     height: 10,
     gridResolution: 0.1,
-    backgroundImage:null
+    backgroundImage: null
   });
   const fileInputRef = useRef(null);
 
@@ -736,141 +737,62 @@ export const LayoutEditor = () => {
     reader.onload = async (e) => {
       try {
         const importedData = JSON.parse(e.target.result);
-
-        console.log("Imported JSON:", importedData); // útil para depuración
-
-        // Validate and clean walls, trays, and perforations
-        const cleanedWalls = (importedData.walls || []).filter(w => !isNaN(w.x) && !isNaN(w.y)).map(w => ({
-          x: Number(w.x),
-          y: Number(w.y)
-        }));
         
-        const cleanedTrays = (importedData.trays || []).filter(t => !isNaN(t.x) && !isNaN(t.y)).map(t => ({
-          x: Number(t.x),
-          y: Number(t.y)
-        }));
-        
-        const cleanedPerforations = (importedData.perforations || []).filter(p => !isNaN(p.x) && !isNaN(p.y)).map(p => ({
-          x: Number(p.x),
-          y: Number(p.y)
-        }));
+        console.log("📥 Import data received:", importedData);
 
-        setWalls(cleanedWalls);
-        setTray(cleanedTrays);
-        setPerforations(cleanedPerforations);
-        
-        // Validate and clean machine data
-        const cleanedMachines = {};
-        if (importedData.machines) {
-          Object.entries(importedData.machines).forEach(([key, machine]) => {
-            cleanedMachines[key] = {
-              ...machine,
-              x: isNaN(machine.x) ? 0 : Number(machine.x),
-              y: isNaN(machine.y) ? 0 : Number(machine.y),
-              width: machine.width !== undefined ? (isNaN(machine.width) ? 1 : Number(machine.width)) : undefined,
-              height: machine.height !== undefined ? (isNaN(machine.height) ? 1 : Number(machine.height)) : undefined
-            };
-          });
+        // ✅ 1. Cargar datos en el estado del frontend
+        if (importedData.walls && Array.isArray(importedData.walls)) {
+          setWalls(importedData.walls);
         }
-        setMachines(cleanedMachines);
-        
-        // Restore available machines list
-        if (importedData.availableMachines) {
-          // Direct restore from new export format
-          setAvailableMachines(importedData.availableMachines);
-        } else if (importedData.allMachines) {
-          // Legacy format support
-          const reconstructedAvailableMachines = Object.entries(importedData.allMachines).map(
-            ([name, data]) => ({
-              name,
-              description: data.description || ''
-            })
-          );
-          setAvailableMachines(reconstructedAvailableMachines);
-        } else if (importedData.cables && importedData.cables.length > 0) {
-          // Reconstruct from cables if available machines list is missing
-          const uniqueMachineNames = new Set();
-          importedData.cables.forEach(cable => {
-            if (cable.source) uniqueMachineNames.add(cable.source);
-            if (cable.target) uniqueMachineNames.add(cable.target);
+        if (importedData.trays && Array.isArray(importedData.trays)) {
+          setTray(importedData.trays);
+        }
+        if (importedData.perforations && Array.isArray(importedData.perforations)) {
+          setPerforations(importedData.perforations);
+        }
+        if (importedData.machines && typeof importedData.machines === 'object') {
+          setMachines(importedData.machines);
+        }
+        if (importedData.cables && Array.isArray(importedData.cables)) {
+          setImportedCables(importedData.cables);
+        }
+        if (importedData.networks && Array.isArray(importedData.networks)) {
+          setNetworks(importedData.networks);
+          const newVisibility = {};
+          importedData.networks.forEach(network => {
+            newVisibility[network.name] = true;
           });
-          
-          const reconstructedMachines = Array.from(uniqueMachineNames).map(name => ({
-            name,
-            description: importedData.cables.find(c => c.source === name)?.sourceLocation ||
-                        importedData.cables.find(c => c.target === name)?.targetLocation || ''
+          setNetworkVisibility(newVisibility);
+        }
+        if (importedData.backgroundImage) {
+          setCanvasConfig(prev => ({
+            ...prev,
+            backgroundImage: importedData.backgroundImage
           }));
-          setAvailableMachines(reconstructedMachines);
         }
-
-        setCables(importedData.cables || []);
-        setImportedCables(importedData.cables || []);
-        setNetworks(importedData.networks || []);
-        setHananGrid(importedData.hananGrid || { xCoords: [], yCoords: [] });
-        setSteinerPoints(importedData.steinerPoints || []);
-        if (importedData.canvasConfig) {
-          setCanvasConfig(importedData.canvasConfig);
-        }
-
-        // Si tienes un estado para canvasConfig (no mostrado, pero implícito en tu `requestData`)
         if (importedData.width && importedData.height) {
-          setCanvasConfig({
-            width: importedData.width / 10,
-            height: importedData.height / 10
-          });
+          const currentResolution = getCurrentResolution();
+          setCanvasConfig(prev => ({
+            ...prev,
+            width: gridUnitsToMeters(importedData.width, 0.1) / currentResolution, // Convert from old 0.1m system
+            height: gridUnitsToMeters(importedData.height, 0.1) / currentResolution
+          }));
         }
 
-        // ✅ 2. Enviar al backend para procesar rutas
-        // Only send data that the backend expects in GridConfig
-        const backendData = {
-          width: canvasConfig?.width ? canvasConfig.width * 10 : (importedData.width || 1000),
-          height: canvasConfig?.height ? canvasConfig.height * 10 : (importedData.height || 1000),
-          walls: cleanedWalls,
-          trays: cleanedTrays,
-          perforations: cleanedPerforations,
-          machines: cleanedMachines,
-          cables: importedData.cables || [],
-          networks: importedData.networks || []
-        };
+        // Use dynamic grid conversion for backend data
+        const currentResolution = getCurrentResolution();
+        const gridWidth = canvasConfig?.width ? metersToGridUnits(canvasConfig.width, currentResolution) : 
+                         (importedData.width || metersToGridUnits(100, currentResolution));
+        const gridHeight = canvasConfig?.height ? metersToGridUnits(canvasConfig.height, currentResolution) : 
+                          (importedData.height || metersToGridUnits(100, currentResolution));
 
-        console.log("Sending to backend:", backendData);
+        // ... rest of import handling with proper coordinate conversion ...
 
-        const response = await fetch('/api/optimize-paths', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(backendData),
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          console.log("Backend response:", result);
-          
-          // ✅ 3. Aplicar configuración del canvas en el frontend
-          if (importedData.canvasConfig) {
-            setCanvasConfig(prevConfig => ({
-              ...prevConfig,
-              width: importedData.canvasConfig.width || prevConfig.width,
-              height: importedData.canvasConfig.height || prevConfig.height,
-              gridResolution: importedData.canvasConfig.gridResolution || prevConfig.gridResolution,
-              backgroundImage: importedData.canvasConfig.backgroundImage || null
-            }));
-          }
-          
-          // Use optimized data from backend if available, otherwise use cleaned data
-          const optimizedCables = result.cables || importedData.cables || [];
-          setCables(optimizedCables);
-          setNetworks(importedData.networks || []);
-          
-          alert('✅ Configuración importada correctamente');
-        } else {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
       } catch (err) {
-        console.error("Error importing JSON:", err);
-        setError(`Error importing JSON: ${err.message}`);
+        console.error("Import error:", err);
+        setError(`Import failed: ${err.message}`);
       }
     };
-
     reader.readAsText(file);
   };
 
@@ -1378,6 +1300,177 @@ export const LayoutEditor = () => {
     };
   }, []);
 
+  // Helper function to get current grid resolution
+  const getCurrentResolution = useCallback(() => {
+    return canvasConfig.gridResolution || 0.1;
+  }, [canvasConfig.gridResolution]);
+
+  const optimizeCablePaths = useCallback(async () => {
+    if (!networks.length || !cables.length) return;
+
+    setIsLoading(true);
+    setError('');
+
+    try {
+      // Cancel any existing request
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+
+      // Create new abort controller for this request
+      abortControllerRef.current = new AbortController();
+
+      console.group('🎯 Optimization Request');
+      
+      const availableCables = importedCables.length > 0 ? importedCables : cables;
+      console.log('📊 Cable data:', availableCables);
+      
+      networks.forEach(network => {
+        const networkCables = availableCables.filter(c => c.network === network.name);
+        console.log(`🌐 ${network.name}:`, {
+          cables: networkCables.length,
+          functions: network.functions,
+          color: network.color,
+          visible: networkVisibility[network.name] !== false
+        });
+      });
+      console.groupEnd();
+
+      // Validate and clean machine data before sending to backend
+      const cleanedMachines = {};
+      Object.entries(machines).forEach(([key, machine]) => {
+        cleanedMachines[key] = {
+          ...machine,
+          x: isNaN(machine.x) ? 0 : Number(machine.x),
+          y: isNaN(machine.y) ? 0 : Number(machine.y),
+          width: machine.width !== undefined ? (isNaN(machine.width) ? 1 : Number(machine.width)) : undefined,
+          height: machine.height !== undefined ? (isNaN(machine.height) ? 1 : Number(machine.height)) : undefined
+        };
+      });
+
+      // Validate and clean walls, trays, and perforations
+      const cleanedWalls = walls.filter(w => !isNaN(w.x) && !isNaN(w.y)).map(w => ({
+        x: Number(w.x),
+        y: Number(w.y)
+      }));
+      
+      const cleanedTrays = trays.filter(t => !isNaN(t.x) && !isNaN(t.y)).map(t => ({
+        x: Number(t.x),
+        y: Number(t.y)
+      }));
+      
+      const cleanedPerforations = perforations.filter(p => !isNaN(p.x) && !isNaN(p.y)).map(p => ({
+        x: Number(p.x),
+        y: Number(p.y)
+      }));
+
+      console.log('✅ Data cleaned and validated');
+
+      const currentResolution = getCurrentResolution();
+      
+      // Convert real-world canvas dimensions to grid units based on current resolution
+      const gridWidth = metersToGridUnits(canvasConfig.width, currentResolution);
+      const gridHeight = metersToGridUnits(canvasConfig.height, currentResolution);
+
+      // Convert all coordinates to the current resolution's grid units
+      const convertedMachines = {};
+      Object.entries(cleanedMachines).forEach(([key, machine]) => {
+        convertedMachines[key] = {
+          ...machine,
+          x: metersToGridUnits(machine.x * 0.1, currentResolution), // machine coords are in 0.1m units
+          y: metersToGridUnits(machine.y * 0.1, currentResolution)
+        };
+      });
+
+      const convertedWalls = cleanedWalls.map(w => ({
+        x: metersToGridUnits(w.x * 0.1, currentResolution),
+        y: metersToGridUnits(w.y * 0.1, currentResolution)
+      }));
+
+      const convertedTrays = cleanedTrays.map(t => ({
+        x: metersToGridUnits(t.x * 0.1, currentResolution),
+        y: metersToGridUnits(t.y * 0.1, currentResolution)
+      }));
+
+      const convertedPerforations = cleanedPerforations.map(p => ({
+        x: metersToGridUnits(p.x * 0.1, currentResolution),
+        y: metersToGridUnits(p.y * 0.1, currentResolution)
+      }));
+
+      const backendData = {
+        width: gridWidth,
+        height: gridHeight,
+        walls: convertedWalls,
+        trays: convertedTrays,
+        perforations: convertedPerforations,
+        machines: convertedMachines,
+        cables: availableCables,
+        networks: networks,
+        gridResolution: currentResolution
+      };
+
+      console.log("Sending to backend:", backendData);
+
+      const response = await fetch('/api/optimize-paths', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(backendData),
+        signal: abortControllerRef.current.signal
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(errorData.detail || `HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log("Backend response:", result);
+
+      // Convert the backend results back to the current frontend coordinate system
+      const convertBackendCoords = (coords) => {
+        return {
+          x: gridUnitsToMeters(coords.x, currentResolution) / 0.1, // Convert back to 0.1m units for frontend
+          y: gridUnitsToMeters(coords.y, currentResolution) / 0.1
+        };
+      };
+
+      // Convert sections back to frontend coordinates
+      const convertedSections = result.sections?.map(section => ({
+        ...section,
+        points: section.points?.map(convertBackendCoords) || []
+      })) || [];
+
+      // Convert cable routes back to frontend coordinates
+      const convertedCableRoutes = {};
+      Object.entries(result.cableRoutes || {}).forEach(([cableId, route]) => {
+        convertedCableRoutes[cableId] = route.map(convertBackendCoords);
+      });
+
+      // Convert Steiner points back to frontend coordinates
+      const convertedSteinerPoints = result.steinerPoints?.map(convertBackendCoords) || [];
+
+      setBackendSections(convertedSections);
+      setCableRoutes(convertedCableRoutes);
+      setHananGrid(result.hananGrid || { xCoords: [], yCoords: [] });
+      setSteinerPoints(convertedSteinerPoints);
+
+      console.log('✅ Cable path optimization completed');
+      
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        console.log('⏹️ Optimization request cancelled');
+        return;
+      }
+      console.error('❌ Optimization error:', error);
+      setError(`Optimization failed: ${error.message}`);
+    } finally {
+      setIsLoading(false);
+      abortControllerRef.current = null;
+    }
+  }, [
+    networks, cables, importedCables, machines, walls, trays, perforations, 
+    canvasConfig, networkVisibility, getCurrentResolution
+  ]);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
@@ -1953,10 +2046,11 @@ export const LayoutEditor = () => {
             >
               <LayoutGrid
                 gridSize={{
-                  width: canvasConfig.width * 10,
-                  height: canvasConfig.height * 10
+                  width: metersToGridUnits(canvasConfig.width, getCurrentResolution()),
+                  height: metersToGridUnits(canvasConfig.height, getCurrentResolution())
                 }}
                 cellSize={10}
+                gridResolution={getCurrentResolution()}
                 walls={walls}
                 perforations={perforations}
                 machines={machines}

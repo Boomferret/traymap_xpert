@@ -63,7 +63,7 @@ export const InfoSidebar = ({
       {/* Content */}
       <div className="flex-1 overflow-y-auto min-h-0">
         <InfoPanel
-          hoveredInfo={hoveredElement}
+          hoveredElement={hoveredElement}
           selectedElement={selectedElement}
           onClose={onClose}
           onCableHover={onCableHover}

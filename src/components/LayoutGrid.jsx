@@ -7,6 +7,7 @@ import { CableTraySimulation } from './CableTraySimulation';
 import { Switch } from '@/components/ui/switch';
 import { InfoPanel } from './InfoPanel';
 import PropTypes from 'prop-types';
+import { calculateMeasurementInterval, getMeasurementLabel, gridUnitsToMeters } from '@/utils/gridUtils';
 
 
 
@@ -197,7 +198,8 @@ export const LayoutGrid = ({
     selectedElement,
     onElementSelect,
     onCableHover,
-    hoveredCable = null
+    hoveredCable = null,
+    gridResolution = 10 // Added gridResolution prop
 }) => {
     const [isDragging, setIsDragging] = useState(false);
     const [dragPosition, setDragPosition] = useState(null);
@@ -1392,31 +1394,36 @@ export const LayoutGrid = ({
                     strokeWidth="0.5"
                   />
                 )}
-                {/* Add measurements every 10 cells (1 meter) */}
-                {i > 0 && i % 10 === 0 && (
-                  <>
-                    {/* Vertical measurement - only show up to height */}
-                    {i <= gridSize.height && (
-                      <text
-                        x={2}
-                        y={i * cellSize - 2}
-                        className="text-xs fill-gray-400"
-                      >
-                        {(i / 10).toFixed(1)}m
-                      </text>
-                    )}
-                    {/* Horizontal measurement - only show up to width */}
-                    {i <= gridSize.width && (
-                      <text
-                        x={i * cellSize + 2}
-                        y={10}
-                        className="text-xs fill-gray-400"
-                      >
-                        {(i / 10).toFixed(1)}m
-                      </text>
-                    )}
-                  </>
-                )}
+                {/* Add measurements based on dynamic resolution */}
+                {(() => {
+                  const measurementInterval = calculateMeasurementInterval(gridResolution || 0.1);
+                  const label = getMeasurementLabel(i, gridResolution || 0.1, measurementInterval);
+                  
+                  return i > 0 && label && (
+                    <>
+                      {/* Vertical measurement - only show up to height */}
+                      {i <= gridSize.height && (
+                        <text
+                          x={2}
+                          y={i * cellSize - 2}
+                          className="text-xs fill-gray-400"
+                        >
+                          {label}
+                        </text>
+                      )}
+                      {/* Horizontal measurement - only show up to width */}
+                      {i <= gridSize.width && (
+                        <text
+                          x={i * cellSize + 2}
+                          y={10}
+                          className="text-xs fill-gray-400"
+                        >
+                          {label}
+                        </text>
+                      )}
+                    </>
+                  );
+                })()}
               </React.Fragment>
             ))}
 
@@ -1462,7 +1469,10 @@ export const LayoutGrid = ({
                 textAnchor="middle"
                 className="text-xs fill-gray-500"
               >
-                1 meter
+                {(() => {
+                  const scaleMeters = gridUnitsToMeters(8, gridResolution || 0.1); // 80px line represents 8 grid units
+                  return scaleMeters < 1 ? `${(scaleMeters * 100).toFixed(0)}cm` : `${scaleMeters.toFixed(scaleMeters < 10 ? 1 : 0)}m`;
+                })()}
               </text>
             </g>
 
@@ -1812,7 +1822,8 @@ LayoutGrid.propTypes = {
   selectedElement: PropTypes.object,
   onElementSelect: PropTypes.func,
   onCableHover: PropTypes.func,
-  hoveredCable: PropTypes.string
+  hoveredCable: PropTypes.string,
+  gridResolution: PropTypes.number // Added gridResolution prop
 };
 
 // Add display name to the main component

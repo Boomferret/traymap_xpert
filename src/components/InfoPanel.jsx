@@ -14,6 +14,33 @@ export const InfoPanel = ({
   const [activeTab, setActiveTab] = useState('info');
   const displayElement = selectedElement || hoveredElement;
 
+  // --------------------------------------------------
+  // Normalise incoming shapes from different callers
+  // --------------------------------------------------
+
+  let elementType = displayElement?.type;
+  let elementData = displayElement?.data;
+
+  if (!elementData && displayElement) {
+    // CableTrayLayout passes {type:'section', section, ...}
+    if (elementType === 'section' && displayElement.section) {
+      elementData = displayElement.section;
+    }
+    // For machine from CableTrayLayout the object itself *is* the data
+    if (elementType === 'machine') {
+      elementData = displayElement;
+    }
+  }
+
+  // For machines coming from CableTrayLayout, ensure combined cables array exists
+  if (elementType === 'machine' && elementData && !elementData.cables) {
+    const combined = [
+      ...(elementData.powerCables || []),
+      ...(elementData.controlCables || [])
+    ];
+    elementData = { ...elementData, cables: combined };
+  }
+
   // Move getCableStatus outside of renderCableDetails
   const getCableStatus = (cable) => {
     if (!cable.length || !cable.routeLength) return 'default';
@@ -61,6 +88,33 @@ export const InfoPanel = ({
   const renderCableDetails = (section) => {
     if (!section || !section.cables) return null;
 
+    // Handle two shapes:
+    // • Tray section  → section.cables is Set, section.details is map
+    // • Machine       → section.cables is Array of cable objects, no details
+
+    let cableEntries = [];
+
+    if (section.details) {
+      // Tray-section path
+      cableEntries = Array.from(section.cables).map(cid => {
+        const details = section.details[cid] || {};
+        return {
+          ...details,
+          cableLabel: cid,
+          cableType: details.cableType || details.type,
+        };
+      });
+    } else if (Array.isArray(section.cables)) {
+      // Machine path – cables already objects
+      cableEntries = section.cables.map(c => ({
+        ...c,
+        cableLabel: c.cableLabel || c.name,
+        cableType: c.cableType || c.type,
+      }));
+    }
+
+    if (cableEntries.length === 0) return null;
+
     // Calculate tray segment length from points
     const calculateSegmentLength = (points) => {
       let length = 0;
@@ -73,18 +127,12 @@ export const InfoPanel = ({
       return length * 0.1;
     };
 
-    const segmentLength = calculateSegmentLength(section.points);
+    const segmentLength = section.points ? calculateSegmentLength(section.points) : 0;
 
-    const cables = Array.from(section.cables).map(cableId => {
-      const details = section.details[cableId];
-      return {
-        ...details,
-        cableLabel: cableId,
-        cableType: details.cableType || details.type,
-        // Calculate estimated route length if we have the points
-        estimatedLength: details.points ? calculateSegmentLength(details.points) : null
-      };
-    });
+    const cables = cableEntries.map(cable => ({
+      ...cable,
+      estimatedLength: cable.points ? calculateSegmentLength(cable.points) : null,
+    }));
 
     const totalArea = cables.reduce((sum, cable) => {
       const diameter = parseFloat(cable?.diameter) || 0;
@@ -247,10 +295,10 @@ export const InfoPanel = ({
     // Get all cables where this machine is source or target, including merged machines
     const mergedNames = new Set(Object.keys(machine.mergedHistory || { [machine.name]: true }));
     
-    const sourceCables = Object.values(machine.cables || {})
-      .filter(cable => mergedNames.has(cable.originalSource || cable.source));
-    const targetCables = Object.values(machine.cables || {})
-      .filter(cable => mergedNames.has(cable.originalTarget || cable.target));
+    const cableArray = Array.isArray(machine.cables) ? machine.cables : Object.values(machine.cables || {});
+
+    const sourceCables = cableArray.filter(cable => mergedNames.has(cable.originalSource || cable.source));
+    const targetCables = cableArray.filter(cable => mergedNames.has(cable.originalTarget || cable.target));
 
     // Group cables by function
     const groupByFunction = (cables) => {
@@ -264,6 +312,12 @@ export const InfoPanel = ({
 
     const sourceFunctions = groupByFunction(sourceCables);
     const targetFunctions = groupByFunction(targetCables);
+
+    // Combine to count functions across source & target without loss
+    const combinedFunctions = { ...sourceFunctions };
+    Object.entries(targetFunctions).forEach(([func, arr]) => {
+      combinedFunctions[func] = [...(combinedFunctions[func] || []), ...arr];
+    });
 
     // Calculate total cable area
     const calculateTotalArea = (cables) => {
@@ -367,7 +421,7 @@ export const InfoPanel = ({
                   <div className="text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Cable Functions
                   </div>
-                  {Object.entries({...sourceFunctions, ...targetFunctions}).map(([func, cables]) => (
+                  {Object.entries(combinedFunctions).map(([func, cables]) => (
                     <div 
                       key={func}
                       className="flex justify-between items-center py-2 px-3 bg-white rounded border border-gray-100"
@@ -452,62 +506,30 @@ export const InfoPanel = ({
 
   return (
     <Card className="w-full h-full p-4 flex flex-col flex-shrink-0">
-      <div className="flex items-center justify-between mb-4 flex-shrink-0">
-        <h3 className="text-lg font-semibold capitalize">
-          {displayElement.type} Details
-        </h3>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          className="h-8 w-8 p-0"
-        >
-          ×
-        </Button>
-      </div>
-
-      {/* Tab Navigation */}
-      <div className="flex gap-2 mb-4 border-b flex-shrink-0">
-        <Button
-          variant={activeTab === 'info' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={() => setActiveTab('info')}
-          className="rounded-b-none"
-        >
-          Information
-        </Button>
-        {displayElement.type === 'machine' && displayElement.cables && displayElement.cables.length > 0 && (
-          <Button
-            variant={activeTab === 'cables' ? 'default' : 'ghost'}
-            size="sm"
-            onClick={() => setActiveTab('cables')}
-            className="rounded-b-none"
-          >
-            Cables ({displayElement.cables.length})
-          </Button>
-        )}
-      </div>
+      
 
       {/* Tab Content */}
       <div className="flex-1 overflow-y-auto min-h-0">
-        {activeTab === 'info' && (
-          <div className="space-y-3">
-            {displayElement.type === 'machine' ? renderMachineDetails(displayElement.data) : renderCableDetails(displayElement.data)}
-          </div>
-        )}
-
-        {activeTab === 'cables' && displayElement.type === 'machine' && (
-          <div className="space-y-3">
-            {renderCableDetails(displayElement.data)}
-          </div>
-        )}
+        {/* Content */}
+        {(() => {
+          if (elementType === 'machine') {
+            if (['info','source','target'].includes(activeTab)) {
+              return renderMachineDetails(elementData);
+            }
+            return null;
+          }
+          // Section / others
+          if (activeTab === 'info') return renderCableDetails(elementData);
+          if (activeTab === 'cables') return renderCableDetails(elementData);
+          return null;
+        })()}
       </div>
     </Card>
   );
 };
 
 InfoPanel.propTypes = {
-  hoveredInfo: PropTypes.object,
+  hoveredElement: PropTypes.object,
   selectedElement: PropTypes.object,
   onClose: PropTypes.func.isRequired,
   onCableHover: PropTypes.func.isRequired,

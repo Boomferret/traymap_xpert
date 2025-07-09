@@ -351,9 +351,10 @@ const CableTrayLayout = ({ machines = {}, walls = [], perforations = [] }) => {
         {/* Info Panel */}
         {(tooltipInfo || selectedElement) && (
           <InfoPanel 
-            hoveredInfo={tooltipInfo}
+            hoveredElement={tooltipInfo}
             selectedElement={selectedElement}
             onClose={() => setSelectedElement(null)}
+            onCableHover={()=>{}}
           />
         )}
       </div>

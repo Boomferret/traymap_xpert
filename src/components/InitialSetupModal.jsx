@@ -5,6 +5,7 @@ import { Modal } from './Modal';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { ImageCalibrationModal } from './ImageCalibrationModal';
+import { calculateDynamicResolution } from '@/utils/gridUtils';
 
 export const InitialSetupModal = ({ isOpen, onClose, onSubmit }) => {
   const [selectedOption, setSelectedOption] = useState('blank');
@@ -16,12 +17,14 @@ export const InitialSetupModal = ({ isOpen, onClose, onSubmit }) => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    const dynamicResolution = calculateDynamicResolution(Number(width), Number(height));
+    
     onSubmit({
       type: selectedOption,
       width: Number(width),
       height: Number(height),
       image: selectedOption === 'image' ? image : null,
-      gridResolution: 0.1 // 10cm grid squares
+      gridResolution: dynamicResolution
     });
     onClose();
   };
@@ -37,6 +40,8 @@ export const InitialSetupModal = ({ isOpen, onClose, onSubmit }) => {
 
   const handleCalibrate = (calibrationData) => {
     setShowCalibration(false);
+    const dynamicResolution = calculateDynamicResolution(calibrationData.width, calibrationData.height);
+    
     onSubmit({
       type: 'image',
       width: Math.round(calibrationData.width * 10) / 10, // Round to nearest 0.1
@@ -48,10 +53,13 @@ export const InitialSetupModal = ({ isOpen, onClose, onSubmit }) => {
         originalHeight: calibrationData.originalHeight,
         metersPerPixel: calibrationData.metersPerPixel
       },
-      gridResolution: 0.1
+      gridResolution: dynamicResolution
     });
     onClose();
   };
+
+  // Calculate what the resolution would be for preview
+  const previewResolution = calculateDynamicResolution(Number(width), Number(height));
 
   return (
     <>
@@ -133,7 +141,7 @@ export const InitialSetupModal = ({ isOpen, onClose, onSubmit }) => {
 
             <div className="pt-4 border-t">
               <p className="text-sm text-gray-500 mb-4">
-                Grid resolution: 0.1m (10cm) per square
+                Grid resolution: {previewResolution.toFixed(2)}m ({(previewResolution * 100).toFixed(0)}cm) per square
               </p>
               <Button
                 type="submit"

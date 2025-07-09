@@ -6,8 +6,23 @@ import itertools
 from heapq import heappush, heappop
 from collections import deque
 import math
+import logging
 
 router = APIRouter()
+
+# -------------------------------------------------------------
+# Logging setup
+# -------------------------------------------------------------
+# We prefer the standard logging module over raw `print` so that
+# the caller can configure verbosity (e.g. DEBUG vs INFO) and sink.
+
+logger = logging.getLogger("traymap.cable_routing")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    logger.addHandler(_h)
+    # default level can be overridden by the main application
+    logger.setLevel(logging.INFO)
 
 # ----------------- MODELS / DATA STRUCTS -----------------
 
@@ -171,7 +186,8 @@ def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[Pa
     else:
         return base_weight  # Full weight for cells far from walls
 
-def build_weighted_graph(width: int, height: int, walls: Set[PathPoint], trays: Set[PathPoint] = set(),redCable:float = 1.0) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
+# Legacy (slow) version kept for reference – DO NOT USE.
+def _build_weighted_graph_old(width: int, height: int, walls: Set[PathPoint], trays: Set[PathPoint] = set(),redCable:float = 1.0) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
     """
     Build adjacency with weights. Each neighbor has (neighbor_point, weight) where 
     weight favors cells closer to walls.
@@ -191,6 +207,108 @@ def build_weighted_graph(width: int, height: int, walls: Set[PathPoint], trays: 
                         weight = calculate_cell_weight(nx, ny, width, height, walls,trays,redCable)
                         neighbors.append((np, weight))
             graph[p] = neighbors
+    return graph
+
+# ============================================================
+# NEW: DISTANCE TRANSFORM + FASTER WEIGHT COMPUTATION
+# ============================================================
+
+def _bfs_distance_map(width: int, height: int, sources: Set[PathPoint]) -> List[List[int]]:
+    """Return a 2-D list with Manhattan distance to the closest point in *sources* using BFS."""
+    logger.debug(f"Computing distance map for {len(sources)} sources on {width}x{height} grid…")
+    # Initialise with +inf
+    dist = [[math.inf for _ in range(width)] for _ in range(height)]
+    q = deque()
+
+    for p in sources:
+        if 0 <= p.x < width and 0 <= p.y < height:
+            dist[p.y][p.x] = 0
+            q.append((p.x, p.y))
+
+    # 4-neighbour BFS
+    while q:
+        x, y = q.popleft()
+        d = dist[y][x] + 1
+        for nx, ny in ((x-1, y), (x+1, y), (x, y-1), (x, y+1)):
+            if 0 <= nx < width and 0 <= ny < height and d < dist[ny][nx]:
+                dist[ny][nx] = d
+                q.append((nx, ny))
+
+    logger.debug("Distance map computed.")
+    return dist
+
+
+def _compute_weight(dist_wall: int, dist_tray: int, redCable: float = 1.0) -> float:
+    """Vectorised replacement for *calculate_cell_weight* using pre-computed distances."""
+    # Base weight configuration copied from original logic
+    if dist_tray == 0 and redCable == 1.0:
+        return -0.40
+
+    base_weight = 10.0
+
+    if dist_wall == math.inf:
+        return base_weight
+
+    if dist_wall == 0:
+        return base_weight * 10  # High penalty for being on a wall (shouldn't happen – we skip walls)
+    elif dist_wall == 1:
+        return base_weight * 0.3
+    elif dist_wall == 2:
+        return base_weight * 0.5 * redCable
+    elif dist_wall == 3:
+        if redCable != 1.0:
+            redCable = redCable / 2
+        return base_weight * 0.7 * redCable
+    else:
+        return base_weight
+
+
+def build_weighted_graph(
+    width: int,
+    height: int,
+    walls: Set[PathPoint],
+    trays: Set[PathPoint] = set(),
+    redCable: float = 1.0,
+    dist_wall: Optional[List[List[int]]] = None,
+    dist_tray: Optional[List[List[int]]] = None,
+) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
+    """Build adjacency list where edge weights favour cells near walls.
+
+    The function now uses *distance transforms* so each weight is O(1).
+    Pass pre-computed *dist_wall* and *dist_tray* for maximum speed.
+    """
+    logger.debug(f"Building weighted graph (redCable={redCable}) …")
+
+    # Compute distance maps lazily if not provided
+    if dist_wall is None:
+        dist_wall = _bfs_distance_map(width, height, walls)
+    if dist_tray is None:
+        dist_tray = _bfs_distance_map(width, height, trays)
+
+    graph: Dict[PathPoint, List[Tuple[PathPoint, float]]] = {}
+
+    for x in range(width):
+        for y in range(height):
+            p = PathPoint(x, y)
+            if p in walls:
+                continue  # Impassable
+
+            weight_here_wall = dist_wall[y][x]
+            weight_here_tray = dist_tray[y][x]
+
+            neighbors: List[Tuple[PathPoint, float]] = []
+            for nx, ny in ((x-1, y), (x+1, y), (x, y-1), (x, y+1)):
+                if 0 <= nx < width and 0 <= ny < height:
+                    np = PathPoint(nx, ny)
+                    if np in walls:
+                        continue
+
+                    w = _compute_weight(dist_wall[ny][nx], dist_tray[ny][nx], redCable)
+                    neighbors.append((np, w))
+
+            graph[p] = neighbors
+
+    logger.debug("Weighted graph built.")
     return graph
 
 def dijkstra_path(start: PathPoint, end: PathPoint, 
@@ -239,6 +357,125 @@ def dijkstra_path(start: PathPoint, end: PathPoint,
                 heappush(heap, (new_cost, next(counter), neighbor))
     
     return None
+
+# -----------------------------------------------------------
+# NEW: Multi-target Dijkstra + Lazy MST builder
+# -----------------------------------------------------------
+
+
+def _dijkstra_to_targets(
+    source: PathPoint,
+    target_set: Set[PathPoint],
+    graph: Dict[PathPoint, List[Tuple[PathPoint, float]]],
+) -> Dict[PathPoint, Tuple[float, List[PathPoint]]]:
+    """Run Dijkstra from *source* until every *target* is reached.
+
+    Returns mapping of target → (cost, path).
+    """
+
+    if not target_set:
+        return {}
+
+    counter = itertools.count()
+    heap: List[Tuple[float, int, PathPoint]] = [(0.0, next(counter), source)]
+    distances = {source: 0.0}
+    came_from: Dict[PathPoint, Optional[PathPoint]] = {source: None}
+
+    results: Dict[PathPoint, Tuple[float, List[PathPoint]]] = {}
+
+    targets_remaining = set(target_set)
+
+    while heap and targets_remaining:
+        current_cost, _, current = heappop(heap)
+
+        # skip if we have already processed this node with shorter cost
+        if current_cost != distances[current]:
+            continue
+
+        if current in targets_remaining:
+            # reconstruct path
+            path: List[PathPoint] = []
+            node: Optional[PathPoint] = current
+            while node is not None:
+                path.append(node)
+                node = came_from[node]
+            path.reverse()
+            results[current] = (current_cost, path)
+            targets_remaining.remove(current)
+            if not targets_remaining:
+                break
+
+        for neighbor, w in graph[current]:
+            new_cost = current_cost + w
+            if neighbor not in distances or new_cost < distances[neighbor]:
+                distances[neighbor] = new_cost
+                came_from[neighbor] = current
+                heappush(heap, (new_cost, next(counter), neighbor))
+
+    return results
+
+
+def build_mst_lazy(
+    terminals: List[PathPoint],
+    graph: Dict[PathPoint, List[Tuple[PathPoint, float]]],
+) -> Tuple[List[Tuple[PathPoint, PathPoint]], Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]]:
+    """Prim’s MST where each Dijkstra runs only once per terminal.
+
+    Returns (mst_edges, pair_routes).
+    """
+
+    if not terminals:
+        return [], {}
+
+    print(
+        f"Building MST lazily: {len(terminals)} terminals – at most {len(terminals)} Dijkstra runs instead of {len(terminals)*(len(terminals)-1)//2}."
+    )
+
+    visited: Set[PathPoint] = set()
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]] = {}
+    mst_edges: List[Tuple[PathPoint, PathPoint]] = []
+
+    # min-heap of candidate edges (cost, u, v) with u visited, v not yet
+    edge_heap: List[Tuple[float, int, PathPoint, PathPoint]] = []
+    counter = itertools.count()
+
+    start = terminals[0]
+    visited.add(start)
+
+    # initial distances from start to all others
+    targets = set(terminals[1:])
+    for tgt, (cost, path) in _dijkstra_to_targets(start, targets, graph).items():
+        pair_routes[(start, tgt)] = (cost, path)
+        pair_routes[(tgt, start)] = (cost, list(reversed(path)))
+        heappush(edge_heap, (cost, next(counter), start, tgt))
+
+    while len(visited) < len(terminals):
+        # Extract cheapest edge to an unvisited terminal
+        while edge_heap and edge_heap[0][2] in visited and edge_heap[0][3] in visited:
+            heappop(edge_heap)
+
+        if not edge_heap:
+            logger.warning("Graph appears disconnected – MST incomplete")
+            break
+
+        cost, _, u, v = heappop(edge_heap)
+        if v in visited:
+            continue
+
+        mst_edges.append((u, v))
+        visited.add(v)
+
+        # Dijkstra from newly visited terminal to all yet-unvisited terminals
+        remaining = set(t for t in terminals if t not in visited)
+        if remaining:
+            for tgt, (cost_vt, path_vt) in _dijkstra_to_targets(v, remaining, graph).items():
+                pair_routes[(v, tgt)] = (cost_vt, path_vt)
+                pair_routes[(tgt, v)] = (cost_vt, list(reversed(path_vt)))
+                heappush(edge_heap, (cost_vt, next(counter), v, tgt))
+
+    print(f"Lazy MST completed with {len(mst_edges)} edges and {len(pair_routes)//2} unique pair routes computed.")
+
+    return mst_edges, pair_routes
 
 def path_distance(path: List[PathPoint]) -> int:
     """Number of edges in a path => len(path)-1."""
@@ -435,7 +672,71 @@ def generate_all_components(
     that are likely to form good Steiner components.
     """
     comps = []
-    
+
+    # Memoisation cache for ad-hoc Dijkstra requests in this call
+    dijkstra_cache: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]] = {}
+
+    def get_path(u: PathPoint, v: PathPoint) -> Tuple[float, List[PathPoint]]:
+        """Return (cost,path) for u→v using cache / pair_routes / fresh Dijkstra."""
+        if (u, v) in dijkstra_cache:
+            return dijkstra_cache[(u, v)]
+        if (u, v) in pair_routes:
+            dijkstra_cache[(u, v)] = pair_routes[(u, v)]
+            return pair_routes[(u, v)]
+
+        res = dijkstra_path(u, v, weighted_graph)
+        if res:
+            cost, path = res
+            # store bidirectionally in pair_routes for future global reuse
+            pair_routes[(u, v)] = (cost, path)
+            pair_routes[(v, u)] = (cost, list(reversed(path)))
+            dijkstra_cache[(u, v)] = (cost, path)
+            dijkstra_cache[(v, u)] = (cost, list(reversed(path)))
+            return cost, path
+        # unreachable in normal grids; return high cost placeholder
+        return float('inf'), []
+
+    # ------------------------------------------------------------
+    # Helper: accurate gain calculation for a component
+    # ------------------------------------------------------------
+
+    def component_gain(connections: List[Tuple[PathPoint, PathPoint]], group_set: Set[PathPoint]) -> Tuple[float, float, float]:
+        """Return (removed_cost, added_cost, gain) for the component."""
+        # 1) cost removed - use merged cost to avoid double counting
+        old_paths = []
+        for (u, v) in mst_edges:
+            if u in group_set and v in group_set:
+                old_paths.append(pair_routes[(u, v)][1])
+        
+        # Calculate merged cost to avoid double-counting shared cells
+        visited = set()
+        removed = 0.0
+        for path in old_paths:
+            for p in path[1:]:  # Skip first point to avoid double counting endpoints
+                if p not in visited:
+                    visited.add(p)
+                    removed += calculate_cell_weight(p.x, p.y, width, height, walls, trays)
+
+        # 2) cost added - also use merged cost to avoid double counting
+        new_paths = []
+        for (u, v) in connections:
+            _, path = get_path(u, v)
+            if not path:
+                return (removed, float('inf'), -float('inf'))
+            new_paths.append(path)
+        
+        # Calculate merged cost for new connections
+        visited = set()
+        added = 0.0
+        for path in new_paths:
+            for p in path[1:]:  # Skip first point to avoid double counting endpoints
+                if p not in visited:
+                    visited.add(p)
+                    added += calculate_cell_weight(p.x, p.y, width, height, walls, trays)
+        
+        gain_val = removed - added
+        return removed, added, gain_val
+
     # Get promising groups instead of all combinations
     if cables and machines:
         groups = find_promising_terminal_groups(terminals, pair_routes, cables, machines)
@@ -451,7 +752,31 @@ def generate_all_components(
             # Try 3-terminal component
             t1, t2, t3 = group
             group_set = {t1, t2, t3}
-            old_len = mst_sub_length_in_group(group_set, mst_edges, pair_routes)
+
+            # --- fast lower-bound check ----------------------------------
+            removed_lb = 0.0
+            for (u,v) in mst_edges:
+                if u in group_set and v in group_set:
+                    removed_lb += pair_routes[(u,v)][0]
+
+            # Simple span lower bound
+            span_lb = (max(p.x for p in group_set) - min(p.x for p in group_set)) + \
+                       (max(p.y for p in group_set) - min(p.y for p in group_set))
+
+            if removed_lb - span_lb <= 0:
+                print(f"[SkipLB] 3-term span LB {[(p.x,p.y) for p in group_set]} removed={removed_lb:.1f} spanLB={span_lb:.1f}")
+                continue
+
+            xs = sorted([t1.x, t2.x, t3.x])
+            ys = sorted([t1.y, t2.y, t3.y])
+            sx, sy = xs[1], ys[1]
+            lb_cost = (abs(sx - t1.x) + abs(sy - t1.y) +
+                       abs(sx - t2.x) + abs(sy - t2.y) +
+                       abs(sx - t3.x) + abs(sy - t3.y))
+
+            if removed_lb - lb_cost <= 0:
+                print(f"[SkipLB] 3-term group {[(p.x,p.y) for p in group_set]} removed={removed_lb:.1f} lb={lb_cost:.1f}")
+                continue
 
             xs = sorted([t1.x, t2.x, t3.x])
             ys = sorted([t1.y, t2.y, t3.y])
@@ -463,8 +788,14 @@ def generate_all_components(
             r3 = dijkstra_path(sp, t3, weighted_graph)
             if not (r1 and r2 and r3):
                 continue
-            new_len = r1[0] + r2[0] + r3[0]  # Use actual costs from Dijkstra
-            gain = old_len - new_len
+            # Compute gain properly while being robust to 2-tuple fallbacks
+            cg_result = component_gain([(sp, t1), (sp, t2), (sp, t3)], group_set)
+            if len(cg_result) == 2:
+                removed_cost, added_cost = cg_result
+                gain = removed_cost - added_cost
+            else:
+                removed_cost, added_cost, gain = cg_result
+            print(f"[SteinerTest] 3-term at ({sx},{sy}): removed={removed_cost:.2f}, added={added_cost:.2f}, gain={gain:.2f}")
             if gain > 0:
                 conns = [(sp, t1), (sp, t2), (sp, t3)]
                 comps.append(
@@ -480,7 +811,27 @@ def generate_all_components(
             # Try 4-terminal component with pairwise partition
             t1, t2, t3, t4 = group
             group_set = {t1, t2, t3, t4}
-            old_len = mst_sub_length_in_group(group_set, mst_edges, pair_routes)
+
+            removed_lb = 0.0
+            for (u,v) in mst_edges:
+                if u in group_set and v in group_set:
+                    removed_lb += pair_routes[(u,v)][0]
+
+            # Simple span lower bound
+            span_lb = (max(p.x for p in group_set) - min(p.x for p in group_set)) + \
+                       (max(p.y for p in group_set) - min(p.y for p in group_set))
+
+            if removed_lb - span_lb <= 0:
+                print(f"[SkipLB] 4-term span LB {[(p.x,p.y) for p in group_set]} removed={removed_lb:.1f} spanLB={span_lb:.1f}")
+                continue
+
+            cx = (min(p.x for p in group_set) + max(p.x for p in group_set))//2
+            cy = (min(p.y for p in group_set) + max(p.y for p in group_set))//2
+            lb_cost = sum(abs(p.x-cx)+abs(p.y-cy) for p in group_set)
+
+            if removed_lb - lb_cost <= 0:
+                print(f"[SkipLB] 4-term group {[(p.x,p.y) for p in group_set]} removed={removed_lb:.1f} lb={lb_cost:.1f}")
+                continue
             
             # Try partitioning based on geometry
             if abs(t1.x - t2.x) < abs(t1.y - t2.y):
@@ -505,15 +856,15 @@ def generate_all_components(
                 if not rAB:
                     continue
 
-                new_len = rA1[0] + rA2[0] + rB1[0] + rB2[0] + rAB[0]  # Use actual costs
-                gain = old_len - new_len
+                connections = [(spA, pA), (spA, pB), (spB, pC), (spB, pD), (spA, spB)]
+                removed_cost, added_cost, gain = component_gain(connections, group_set)
+                print(f"[SteinerTest] 4-term at ({spA.x},{spA.y})/({spB.x},{spB.y}): removed={removed_cost:.2f}, added={added_cost:.2f}, gain={gain:.2f}")
                 if gain > 0:
-                    conns = [(spA, pA), (spA, pB), (spB, pC), (spB, pD), (spA, spB)]
                     comps.append(
                         FullComponent(
                             terminals=list(group_set),
                             steiner_points=[spA, spB],
-                            connections=conns,
+                            connections=connections,
                             gain=gain
                         )
                     )
@@ -854,8 +1205,32 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         walls -= perfs  # remove perforations from the walls
         print(walls)
         print(trays)
-        # 1) Full Dijkstra graph
-        weighted_graph = build_weighted_graph(config.width, config.height, walls,trays=trays)
+        # ------------------------------------------------------------
+        # 1) Pre-compute distance maps & set up a lightweight graph cache
+        # ------------------------------------------------------------
+
+        print("Pre-computing distance transforms …")
+        dist_wall = _bfs_distance_map(config.width, config.height, walls)
+        dist_tray = _bfs_distance_map(config.width, config.height, trays)
+
+        graph_cache: Dict[float, Dict[PathPoint, List[Tuple[PathPoint, float]]]] = {}
+
+        def get_graph(red: float = 1.0):
+            """Return (and cache) the weighted graph for a given *redCable* factor."""
+            if red not in graph_cache:
+                print(f"Creating weighted graph cache entry for redCable={red:.2f}")
+                graph_cache[red] = build_weighted_graph(
+                    config.width,
+                    config.height,
+                    walls,
+                    trays=trays,
+                    redCable=red,
+                    dist_wall=dist_wall,
+                    dist_tray=dist_tray,
+                )
+            return graph_cache[red]
+
+        weighted_graph = get_graph(1.0)
 
         # 2) Collect terminals
         terminals = []
@@ -863,12 +1238,9 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             pt = PathPoint(m.x, m.y)
             terminals.append(pt)
 
-        # 3) Precompute Dijkstra routes for all machine pairs
-        pair_routes = precompute_machine_pairs(terminals, weighted_graph, config.width, config.height, walls)
-
-        # 4) Initial MST
-        print("\n--- PASS 0: Building Initial MST ---")
-        mst_edges = find_wall_aware_mst(terminals, pair_routes)
+        # 3) Build MST lazily (avoids O(M^2) Dijkstra)
+        print("\n--- PASS 0: Building Initial MST (lazy Prim) ---")
+        mst_edges, pair_routes = build_mst_lazy(terminals, weighted_graph)
         init_length = mst_total_length(mst_edges, pair_routes)
         print(f"Initial MST distance: {init_length}")
 
@@ -886,6 +1258,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             while True:
                 iteration_count += 1
                 print(f"  PASS {pass_id}, iteration {iteration_count}: generating 3- & 4-term components...")
+                print(f"    ➕ Terminals (incl. Steiner): {len(terminals)}")
 
                 comps = generate_all_components(
                     terminals, 
@@ -900,6 +1273,12 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                     machines=config.machines
                 )
                 print(f"  Found {len(comps)} candidate components with gain>0.")
+                if comps:
+                    print("    Top candidate components (up to 5):")
+                    for i, c in enumerate(comps[:5]):
+                        term_labels = [(p.x, p.y) for p in c.terminals]
+                        st_labels = [(p.x, p.y) for p in c.steiner_points]
+                        print(f"      #{i+1}: gain={c.gain:.2f}, terminals={term_labels}, steiner={st_labels}")
 
                 if not comps:
                     print("  No more components, stopping this pass.")
@@ -920,13 +1299,16 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
                 if best_comp and best_improvement > 0:
                     print(f"  Accepted component with gain={best_comp.gain:.2f}, improvement={best_improvement:.2f}")
+                    print(f"    ✅ Accepted Steiner points at {[ (p.x,p.y) for p in best_comp.steiner_points ]}")
                     mst_edges = best_new_mst
                     current_length -= best_improvement
                     used_steiner_points.update(best_comp.steiner_points)
+                    # Include new Steiner points as terminals for subsequent component generation
+                    terminals.extend([sp for sp in best_comp.steiner_points if sp not in terminals])
                     total_comps_used += 1
                     improved_any = True
                 else:
-                    print("  No single-component improvement found.")
+                    print("    😕 No component improves the MST further in this iteration.")
                     break
 
             if improved_any:
@@ -952,6 +1334,13 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         mst_adjacency = build_mst_adjacency(mst_edges, pair_routes)
         t_junction_points = detect_steiner_points(mst_adjacency)
 
+        if t_junction_points:
+            print("🔸 Natural Steiner points (T-junctions):",
+                  [(p.x, p.y) for p in t_junction_points])
+            print("💡 Consider using these as new terminals for further optimisation passes!")
+        else:
+            print("🔸 No natural Steiner points detected")
+
         # Combine them with used_steiner_points for final reporting
         all_steiner = set(used_steiner_points) | t_junction_points
 
@@ -966,45 +1355,61 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             tpt = PathPoint(config.machines[cb.target].x, config.machines[cb.target].y)
             final_route = find_cable_route(spt, tpt, mst_edges, pair_routes)
             cable_routes[cid] = final_route
-            #TODO recalcular las rutas de cables que su lenght< que el camino 
-            print("AAAAAAAAAAAAAA" + cb.length)
-            if (cb.length!=""):
-                expected_len = float(cb.length.replace("m", "").replace(",", "."))
-            else: expected_len=1000000
-            print("BBBBBBBBBBBBBBBBBBB" + str(expected_len))
+            # --------------------------------------------------------
+            # 📏  Cable length sanity-check vs available cable length
+            # --------------------------------------------------------
+            def _parse_length(val: Optional[str]) -> Optional[float]:
+                if not val:
+                    return None
+                try:
+                    txt = val.strip().lower().replace("m", "").replace(",", ".")
+                    return float(txt)
+                except Exception:
+                    return None
 
+            expected_len = _parse_length(getattr(cb, "length", None))
 
-            actual_len = (len(final_route) - 1) * 0.1
+            actual_len = max(0, len(final_route) - 1) * 0.1  # 0.1m per grid edge
 
-            if expected_len and actual_len > expected_len:
-                print(f"[WARN] Cable {cid} tiene ruta de {actual_len:.2f}m (> {expected_len:.2f}m). Recalculando...")
-
-                max_attempts = 2
-                attempt = 0
-                redCable = 0.25
-                new_route = None
-
-                while attempt < max_attempts and redCable > 0.0:
-                    print(f"  ➤ Intento {attempt+1}: recalculando con redCable = {redCable:.2f}")
-                    less_wall_graph = build_weighted_graph(config.width, config.height, walls, redCable=redCable,trays=trays)
-                    result = dijkstra_path(spt, tpt, less_wall_graph)
-
-                    if result:
-                        new_len, new_path = result
-                        if (new_len * 0.1) <= expected_len:
-                            new_route = [Point(x=p.x, y=p.y) for p in new_path]
-                            print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * 0.1:.2f}m")
-                            break  # Ruta aceptable encontrada
-
-                    redCable -= 0.1
-                    attempt += 1
-
-                if new_route:
-                    cable_routes[cid] = new_route
+            if expected_len is not None:
+                if actual_len <= expected_len:
+                    print(f"[LENGTH ✅] Cable {cid}: route {actual_len:.2f}m ≤ specified {expected_len:.2f}m")
                 else:
-                    print(f"    ✖️ No se encontró ruta más corta tras {attempt} intentos.")
-            
+                    over = actual_len - expected_len
+                    pct = 100 * over / expected_len
+                    print(f"[LENGTH ❌] Cable {cid}: route {actual_len:.2f}m exceeds {expected_len:.2f}m (+{over:.2f}m, {pct:.1f}% longer). Attempting re-route…")
+ 
+                    # Try to find cheaper weighted path by relaxing wall penalty (redCable ↓)
+                    max_attempts = 2
+                    attempt = 0
+                    redCable = 0.25
+                    new_route = None
 
+                    while attempt < max_attempts and redCable > 0.0:
+                        print(f"  ➤ Intento {attempt+1}: recalculando con redCable = {redCable:.2f}")
+                        less_wall_graph = get_graph(redCable)
+                        result = dijkstra_path(spt, tpt, less_wall_graph)
+
+                        if result:
+                            new_len, new_path = result
+                            if (new_len * 0.1) <= expected_len:
+                                new_route = [Point(x=p.x, y=p.y) for p in new_path]
+                                print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * 0.1:.2f}m")
+                                break  # Ruta aceptable encontrada
+
+                        redCable -= 0.1
+                        attempt += 1
+
+                    if new_route:
+                        cable_routes[cid] = new_route
+                        actual_len = max(0, len(new_route) - 1) * 0.1
+                        improv = expected_len - actual_len
+                        print(f"    👍 Ruta final {actual_len:.2f}m (margin {improv:.2f}m)")
+                    else:
+                        print(f"    ✖️ No se encontró ruta ≤ cable length tras {attempt} intentos.  Consider longer cable or manual adjustment.")
+            else:
+                # No specified physical length ➜ just log route
+                print(f"[LENGTH] Cable {cid}: route length {actual_len:.2f}m (no specified max)")
 
 
         dbg = DebugInfo(
