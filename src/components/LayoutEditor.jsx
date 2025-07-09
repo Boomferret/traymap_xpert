@@ -726,75 +726,57 @@ export const LayoutEditor = () => {
     }
   };
   
-  
-  
-
-  const handleImport = (event) => {
-    const file = event.target.files[0];
+  const handleImport = (e) => {
+    const file = e.target.files?.[0];
     if (!file) return;
-
+  
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = (event) => {
       try {
-        const importedData = JSON.parse(e.target.result);
-        
-        console.log("📥 Import data received:", importedData);
-
-        // ✅ 1. Cargar datos en el estado del frontend
-        if (importedData.walls && Array.isArray(importedData.walls)) {
-          setWalls(importedData.walls);
+        const importedData = JSON.parse(event.target.result);
+  
+        // Validación mínima
+        if (!importedData.machines || !importedData.cables) {
+          alert('El archivo no contiene datos válidos de máquinas o cables.');
+          return;
         }
-        if (importedData.trays && Array.isArray(importedData.trays)) {
-          setTray(importedData.trays);
-        }
-        if (importedData.perforations && Array.isArray(importedData.perforations)) {
-          setPerforations(importedData.perforations);
-        }
-        if (importedData.machines && typeof importedData.machines === 'object') {
-          setMachines(importedData.machines);
-        }
-        if (importedData.cables && Array.isArray(importedData.cables)) {
-          setImportedCables(importedData.cables);
-        }
-        if (importedData.networks && Array.isArray(importedData.networks)) {
-          setNetworks(importedData.networks);
-          const newVisibility = {};
-          importedData.networks.forEach(network => {
-            newVisibility[network.name] = true;
-          });
-          setNetworkVisibility(newVisibility);
-        }
-        if (importedData.backgroundImage) {
-          setCanvasConfig(prev => ({
-            ...prev,
-            backgroundImage: importedData.backgroundImage
-          }));
-        }
-        if (importedData.width && importedData.height) {
-          const currentResolution = getCurrentResolution();
-          setCanvasConfig(prev => ({
-            ...prev,
-            width: gridUnitsToMeters(importedData.width, 0.1) / currentResolution, // Convert from old 0.1m system
-            height: gridUnitsToMeters(importedData.height, 0.1) / currentResolution
-          }));
-        }
-
-        // Use dynamic grid conversion for backend data
-        const currentResolution = getCurrentResolution();
-        const gridWidth = canvasConfig?.width ? metersToGridUnits(canvasConfig.width, currentResolution) : 
-                         (importedData.width || metersToGridUnits(100, currentResolution));
-        const gridHeight = canvasConfig?.height ? metersToGridUnits(canvasConfig.height, currentResolution) : 
-                          (importedData.height || metersToGridUnits(100, currentResolution));
-
-        // ... rest of import handling with proper coordinate conversion ...
-
-      } catch (err) {
-        console.error("Import error:", err);
-        setError(`Import failed: ${err.message}`);
+  
+        // CanvasConfig con fallback
+        const defaultCanvasConfig = {
+          width: 10,
+          height: 10,
+          gridResolution: 0.1,
+          backgroundImage: ''
+        };
+  
+        const loadedCanvasConfig = importedData.canvasConfig
+          ? { ...defaultCanvasConfig, ...importedData.canvasConfig }
+          : defaultCanvasConfig;
+  
+        // Setear canvasConfig
+        setCanvasConfig(loadedCanvasConfig);
+  
+        // Resto de los datos
+        setWalls(importedData.walls || []);
+        setTray(importedData.trays || []);
+        setPerforations(importedData.perforations || []);
+        setMachines(importedData.machines || {});
+        setAvailableMachines(importedData.availableMachines || []);
+        setCables(importedData.cables || []);
+        setNetworks(importedData.networks || []);
+      } catch (error) {
+        console.error('Error al importar el archivo:', error);
+        alert('Error al leer el archivo JSON.');
       }
     };
+  
     reader.readAsText(file);
+  
+    // Para permitir volver a importar el mismo archivo
+    e.target.value = '';
   };
+  
+  
 
 
   const handleFileUpload = async (e) => {
