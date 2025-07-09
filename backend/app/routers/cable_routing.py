@@ -242,7 +242,7 @@ def _compute_weight(dist_wall: int, dist_tray: int, redCable: float = 1.0) -> fl
     """Vectorised replacement for *calculate_cell_weight* using pre-computed distances."""
     # Base weight configuration copied from original logic
     if dist_tray == 0 and redCable == 1.0:
-        return -0.40
+        return 0
 
     base_weight = 10.0
 
@@ -252,9 +252,9 @@ def _compute_weight(dist_wall: int, dist_tray: int, redCable: float = 1.0) -> fl
     if dist_wall == 0:
         return base_weight * 10  # High penalty for being on a wall (shouldn't happen – we skip walls)
     elif dist_wall == 1:
-        return base_weight * 0.3
+        return base_weight * 0.35
     elif dist_wall == 2:
-        return base_weight * 0.5 * redCable
+        return base_weight * 0.55* redCable
     elif dist_wall == 3:
         if redCable != 1.0:
             redCable = redCable / 2
