@@ -1378,7 +1378,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             actual_len = max(0, len(final_route) - 1) * config.gridResolution  # 0.1m per grid edge
 
             if expected_len is not None:
-                if actual_len <= expected_len:
+                if actual_len <= expected_len and (cb.source!="CUS" or cb.target!="CUS"):
                     print(f"[LENGTH ✅] Cable {cid}: route {actual_len:.2f}m ≤ specified {expected_len:.2f}m")
                 else:
                     over = actual_len - expected_len
@@ -1402,13 +1402,13 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
                         if result:
                             new_len, new_path = result
-                            new_route = [Point(x=p.x, y=p.y) for p in new_path]
-                            print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * config.gridResolution :.2f}m")
-                            print("    Ruta:")
-                            for p in new_route:
-                                print(f"      -> ({p.x}, {p.y})")
-                            break  # Ruta aceptable encontrada
-
+                            if (new_len * config.gridResolution ) <= expected_len:
+                                new_route = [Point(x=p.x, y=p.y) for p in new_path]
+                                print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * config.gridResolution :.2f}m")
+                                print("    Ruta:")
+                                for p in new_route:
+                                    print(f"      -> ({p.x}, {p.y})")
+                                break  # Ruta aceptable encontrada
                         redCable -= 0.1
                         attempt += 1
 
@@ -1492,6 +1492,17 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             sections.append(sec)
             status = "re-routed" if cid in rerouted_cables else "extra"
             print(f"➕ Sección {status} añadida para cable {cid} con {len(route)} puntos en red '{net_name}'")
+
+        for i in (0,5):
+            for cb in config.cables:
+                cid = cb.cableLabel or f"{cb.source}-{cb.target}"
+                spt = PathPoint(config.machines[cb.source].x, config.machines[cb.source].y)
+                tpt = PathPoint(config.machines[cb.target].x, config.machines[cb.target].y)
+                final_route = find_cable_route(spt, tpt, mst_edges, pair_routes)
+                cable_routes[cid] = final_route
+
+            sections = [sec for sec in sections if sec.cables]
+
 
 
         dbg = DebugInfo(
