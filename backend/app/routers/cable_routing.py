@@ -1353,6 +1353,8 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
         # 8) Build final cable routes
         cable_routes = {}
+        rerouted_cables = set()  # Track cables that were re-routed
+        
         for cb in config.cables:
             cid = cb.cableLabel or f"{cb.source}-{cb.target}"
             spt = PathPoint(config.machines[cb.source].x, config.machines[cb.source].y)
@@ -1413,6 +1415,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
                     if new_route:
                         cable_routes[cid] = new_route
+                        rerouted_cables.add(cid)  # Mark cable as re-routed
                         actual_len = max(0, len(new_route) - 1) * config.gridResolution 
                         improv = expected_len - actual_len
                         print(f"    👍 Ruta final {actual_len:.2f}m (margin {improv:.2f}m)")
@@ -1422,19 +1425,49 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                 # No specified physical length ➜ just log route
                 print(f"[LENGTH] Cable {cid}: route length {actual_len:.2f}m (no specified max)")
 
+        # Remove re-routed cables from existing sections
+        if rerouted_cables:
+            print(f"🔄 Processing {len(rerouted_cables)} re-routed cables: {rerouted_cables}")
+            sections_to_keep = []
+            for sec in sections:
+                # Remove re-routed cables from this section
+                remaining_cables = sec.cables - rerouted_cables
+                if remaining_cables:
+                    # Update section with remaining cables and their details
+                    remaining_details = {cid: detail for cid, detail in sec.details.items() 
+                                       if cid in remaining_cables}
+                    updated_section = Section(
+                        points=sec.points,
+                        cables=remaining_cables,
+                        network=sec.network,
+                        details=remaining_details,
+                        strokeWidth=4 + min(len(remaining_cables)*0.75, 15)
+                    )
+                    sections_to_keep.append(updated_section)
+                # If section has no remaining cables, it's discarded
+            sections = sections_to_keep
+            print(f"🗑️  Updated sections: {len(sections)} sections remain after removing re-routed cables")
+
+        # Build network lookup table for proper network assignment
+        network_lookup = {}
+        for net in config.networks:
+            for func in net.get("functions", []):
+                network_lookup[func] = net["name"]
+
         cables_in_sections = set()
         for sec in sections:
             cables_in_sections.update(sec.cables)
 
+        # Create sections for cables not in sections (including re-routed ones)
         for cid, route in cable_routes.items():
-            if cid in cables_in_sections or len(route) < 2:
-                continue
+
 
             cb = next((c for c in config.cables if (c.cableLabel or f"{c.source}-{c.target}") == cid), None)
             if not cb:
                 continue
 
-            net_name = cb.network or "default"
+            # Use network lookup to determine proper network, fallback to cable.network or "default"
+            net_name = network_lookup.get(cb.cableFunction) or cb.network or "default"
 
             sec = Section(
                 points=route,
@@ -1458,7 +1491,8 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                 strokeWidth=4
             )
             sections.append(sec)
-            print(f"➕ Sección extra añadida para cable {cid} con {len(route)} puntos")
+            status = "re-routed" if cid in rerouted_cables else "extra"
+            print(f"➕ Sección {status} añadida para cable {cid} con {len(route)} puntos en red '{net_name}'")
 
 
         dbg = DebugInfo(
