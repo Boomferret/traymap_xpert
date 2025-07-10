@@ -1386,7 +1386,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                     print(f"[LENGTH ❌] Cable {cid}: route {actual_len:.2f}m exceeds {expected_len:.2f}m (+{over:.2f}m, {pct:.1f}% longer). Attempting re-route…")
  
                     # Try to find cheaper weighted path by relaxing wall penalty (redCable ↓)
-                    max_attempts = 2
+                    max_attempts = 1
                     attempt = 0
                     redCable = 0.25
                     new_route = None
@@ -1402,13 +1402,12 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
                         if result:
                             new_len, new_path = result
-                            if (new_len * config.gridResolution ) <= expected_len:
-                                new_route = [Point(x=p.x, y=p.y) for p in new_path]
-                                print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * config.gridResolution :.2f}m")
-                                print("    Ruta:")
-                                for p in new_route:
-                                    print(f"      -> ({p.x}, {p.y})")
-                                break  # Ruta aceptable encontrada
+                            new_route = [Point(x=p.x, y=p.y) for p in new_path]
+                            print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * config.gridResolution :.2f}m")
+                            print("    Ruta:")
+                            for p in new_route:
+                                print(f"      -> ({p.x}, {p.y})")
+                            break  # Ruta aceptable encontrada
 
                         redCable -= 0.1
                         attempt += 1
