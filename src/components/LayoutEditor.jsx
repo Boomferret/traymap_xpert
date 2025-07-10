@@ -4,6 +4,7 @@ import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { LayoutGrid } from './LayoutGrid';
 import { NetworkPanel } from './NetworkPanel';
 import { InfoSidebar } from './InfoSidebar';
+import { ProblematicCablesPanel } from './ProblematicCablesPanel';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -147,6 +148,9 @@ export const LayoutEditor = () => {
   const [hoveredElement, setHoveredElement] = useState(null);
   const [cableSearchTerm, setCableSearchTerm] = useState('');
 
+  // Add state for problematic cables
+  const [problematicCables, setProblematicCables] = useState([]);
+
   // Dynamic canvas sizing state
   const [canvasContainerSize, setCanvasContainerSize] = useState({ width: 800, height: 600 });
 
@@ -159,7 +163,25 @@ export const LayoutEditor = () => {
     // Reserve space for sidebars and padding
     const leftSidebarWidth = sidebarCollapsed ? 16 + 32 : 320 + 32; // width + padding
     const networkPanelWidth = 384 + 32; // max-width (md = 384px) + padding for expanded state
-    const rightSidebarWidth = 256 + 32; // min-width + padding
+    
+    // Calculate dynamic right sidebar width based on visible panels
+    let rightSidebarWidth = 32; // base padding
+    const hasInfoSidebar = selectedElement || hoveredElement;
+    const hasProblematicCables = problematicCables && problematicCables.length > 0;
+    
+    if (hasInfoSidebar) {
+      rightSidebarWidth += 256 + 16; // InfoSidebar width + gap
+    }
+    if (hasProblematicCables) {
+      rightSidebarWidth += 320 + 16; // ProblematicCablesPanel width + gap
+    }
+    // Remove extra gap if no panels are visible
+    if (!hasInfoSidebar && !hasProblematicCables) {
+      rightSidebarWidth = 32; // just padding
+    } else {
+      rightSidebarWidth -= 16; // remove extra gap from last panel
+    }
+    
     const horizontalPadding = 32; // reduced from 64 since canvas no longer has internal padding
     
     // Calculate dynamic vertical padding based on actual content
@@ -231,7 +253,7 @@ export const LayoutEditor = () => {
       width: Math.round(optimalWidth),
       height: Math.round(optimalHeight)
     };
-  }, [canvasConfig, sidebarCollapsed, showCableList]);
+  }, [canvasConfig, sidebarCollapsed, showCableList, selectedElement, hoveredElement, problematicCables]);
 
   // Update canvas size when config changes
   useEffect(() => {
@@ -612,6 +634,7 @@ export const LayoutEditor = () => {
         setBackendSections(data.sections);
         setHananGrid(data.hananGrid || { xCoords: [], yCoords: [] });
         setSteinerPoints(data.steinerPoints || []);
+        setProblematicCables(data.problematicCables || []);
       }
       
       // Clear the controller reference on successful completion
@@ -632,7 +655,36 @@ export const LayoutEditor = () => {
     }
   }, [machines, walls, perforations, cables, importedCables, canvasConfig.width, canvasConfig.height, networks, trays]);
 
+  // Handle cable length updates
+  const handleCableLengthUpdate = useCallback(async (cable, newLength) => {
+    try {
+      console.log(`Updating cable ${cable.cableLabel || `${cable.source}-${cable.target}`} to length ${newLength}m`);
+      
+      // Update the cable length in the cables array
+      const cablesToUpdate = importedCables.length > 0 ? importedCables : cables;
+      const updatedCables = cablesToUpdate.map(c => {
+        if ((c.cableLabel && c.cableLabel === cable.cableLabel) ||
+            (c.source === cable.source && c.target === cable.target)) {
+          return { ...c, length: `${newLength}m` };
+        }
+        return c;
+      });
 
+      // Update the appropriate cables state
+      if (importedCables.length > 0) {
+        setImportedCables(updatedCables);
+      } else {
+        setCables(updatedCables);
+      }
+
+      // Trigger re-optimization with updated cable data
+      await fetchOptimalPaths();
+      
+    } catch (error) {
+      console.error('Error updating cable length:', error);
+      throw error;
+    }
+  }, [cables, importedCables, fetchOptimalPaths]);
 
   const handleExport = async () => {
     // Función para convertir URL de imagen a base64 usando canvas
@@ -2068,14 +2120,30 @@ export const LayoutEditor = () => {
             </div>
           </div>
 
-          {/* Right Info Sidebar */}
-          <div className="flex flex-col min-w-48 max-w-96 h-full">
-            <InfoSidebar
-            selectedElement={selectedElement}
-            hoveredElement={hoveredElement}
-            onClose={() => setSelectedElement(null)}
-            onCableHover={setHoveredCable}
-            />
+          {/* Right Info Sidebar - horizontal layout */}
+          <div className="flex h-full gap-4 min-w-0">
+            {/* Info Sidebar - only show when something is hovered or selected */}
+            {(selectedElement || hoveredElement) && (
+              <div className="min-w-64 max-w-96 h-full">
+                <InfoSidebar
+                  selectedElement={selectedElement}
+                  hoveredElement={hoveredElement}
+                  onClose={() => setSelectedElement(null)}
+                  onCableHover={setHoveredCable}
+                />
+              </div>
+            )}
+            
+            {/* Problematic Cables Panel - only show when there are problematic cables */}
+            {problematicCables && problematicCables.length > 0 && (
+              <div className="min-w-80 max-w-96 h-full">
+                <ProblematicCablesPanel
+                  problematicCables={problematicCables}
+                  onCableLengthUpdate={handleCableLengthUpdate}
+                  isLoading={isLoading}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -10,6 +10,35 @@ import logging
 
 router = APIRouter()
 
+# Add new model for cable update request
+class CableUpdateRequest(BaseModel):
+    cableLabel: Optional[str] = None
+    source: str
+    target: str
+    newLength: str
+
+@router.post("/update-cable-length")
+async def update_cable_length(request: CableUpdateRequest):
+    """
+    Update a cable's length. This is a simplified endpoint that just confirms
+    the update. The actual re-optimization should be triggered by the frontend
+    by calling the optimize-paths endpoint again with updated cable data.
+    """
+    try:
+        print(f"[CABLE UPDATE] Received request to update cable {request.cableLabel or f'{request.source}-{request.target}'} to length {request.newLength}")
+        
+        return {
+            "success": True,
+            "message": f"Cable length updated to {request.newLength}",
+            "cableIdentifier": request.cableLabel or f"{request.source}-{request.target}"
+        }
+    
+    except Exception as ex:
+        import traceback
+        print("\n=== ERROR in update_cable_length ===")
+        print(traceback.format_exc())
+        raise HTTPException(500, f"Error updating cable length: {ex}")
+
 # -------------------------------------------------------------
 # Logging setup
 # -------------------------------------------------------------
@@ -89,6 +118,16 @@ class DebugInfo(BaseModel):
     num_components_used: int
     passes_used: int
 
+class ProblematicCable(BaseModel):
+    cableLabel: Optional[str] = None
+    source: str
+    target: str
+    specifiedLength: float
+    routeLength: float
+    theoreticalMinLength: float
+    excessLength: float
+    excessPercentage: float
+
 class RoutingResponse(BaseModel):
     sections: List[Section] = []
     cableRoutes: Dict[str, List[Point]] = {}
@@ -98,6 +137,7 @@ class RoutingResponse(BaseModel):
     }
     steinerPoints: List[Dict[str, int]] = []
     debug_info: Optional[DebugInfo] = None
+    problematicCables: List[ProblematicCable] = []
 
 @dataclass
 class PathPoint:
@@ -782,6 +822,17 @@ def generate_all_components(
             xs = sorted([t1.x, t2.x, t3.x])
             ys = sorted([t1.y, t2.y, t3.y])
             sx, sy = xs[1], ys[1]  # median
+            lb_cost = (abs(sx - t1.x) + abs(sy - t1.y) +
+                       abs(sx - t2.x) + abs(sy - t2.y) +
+                       abs(sx - t3.x) + abs(sy - t3.y))
+
+            if removed_lb - lb_cost <= 0:
+                print(f"[SkipLB] 3-term group {[(p.x,p.y) for p in group_set]} removed={removed_lb:.1f} lb={lb_cost:.1f}")
+                continue
+
+            xs = sorted([t1.x, t2.x, t3.x])
+            ys = sorted([t1.y, t2.y, t3.y])
+            sx, sy = xs[1], ys[1]  # median
             sp = PathPoint(sx, sy)
 
             r1 = dijkstra_path(sp, t1, weighted_graph)
@@ -1354,6 +1405,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         # 8) Build final cable routes
         cable_routes = {}
         rerouted_cables = set()  # Track cables that were re-routed
+        problematic_cables = []  # Track cables with length issues
         
         for cb in config.cables:
             cid = cb.cableLabel or f"{cb.source}-{cb.target}"
@@ -1361,6 +1413,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             tpt = PathPoint(config.machines[cb.target].x, config.machines[cb.target].y)
             final_route = find_cable_route(spt, tpt, mst_edges, pair_routes)
             cable_routes[cid] = final_route
+            
             # --------------------------------------------------------
             # 📏  Cable length sanity-check vs available cable length
             # --------------------------------------------------------
@@ -1374,8 +1427,11 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                     return None
 
             expected_len = _parse_length(getattr(cb, "length", None))
-
             actual_len = max(0, len(final_route) - 1) * config.gridResolution  # 0.1m per grid edge
+            
+            # Calculate theoretical minimum length (Manhattan distance)
+            theoretical_min = abs(spt.x - tpt.x) + abs(spt.y - tpt.y)
+            theoretical_min_len = theoretical_min * config.gridResolution
 
             if expected_len is not None:
                 if actual_len <= expected_len and (cb.source!="CUS" or cb.target!="CUS"):
@@ -1385,6 +1441,18 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                     pct = 100 * over / expected_len
                     print(f"[LENGTH ❌] Cable {cid}: route {actual_len:.2f}m exceeds {expected_len:.2f}m (+{over:.2f}m, {pct:.1f}% longer). Attempting re-route…")
  
+                    # Add to problematic cables before attempting re-route
+                    problematic_cables.append(ProblematicCable(
+                        cableLabel=cb.cableLabel,
+                        source=cb.source,
+                        target=cb.target,
+                        specifiedLength=expected_len,
+                        routeLength=actual_len,
+                        theoreticalMinLength=theoretical_min_len,
+                        excessLength=over,
+                        excessPercentage=pct
+                    ))
+                    
                     # Try to find cheaper weighted path by relaxing wall penalty (redCable ↓)
                     max_attempts = 1
                     attempt = 0
@@ -1418,6 +1486,11 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                         actual_len = max(0, len(new_route) - 1) * config.gridResolution 
                         improv = expected_len - actual_len
                         print(f"    👍 Ruta final {actual_len:.2f}m (margin {improv:.2f}m)")
+                        
+                        # Remove from problematic cables if re-route was successful
+                        problematic_cables = [pc for pc in problematic_cables if not (
+                            pc.source == cb.source and pc.target == cb.target and pc.cableLabel == cb.cableLabel
+                        )]
                     else:
                         print(f"    ✖️ No se encontró ruta ≤ cable length tras {attempt} intentos.  Consider longer cable or manual adjustment.")
             else:
@@ -1521,7 +1594,8 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             cableRoutes=cable_routes,
             hananGrid=hanan,
             steinerPoints=[{"x": sp.x, "y": sp.y} for sp in all_steiner],
-            debug_info=dbg
+            debug_info=dbg,
+            problematicCables=problematic_cables
         )
 
         return response
