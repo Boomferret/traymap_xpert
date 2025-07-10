@@ -1173,6 +1173,8 @@ def calculate_hanan_grid(all_points: List[PathPoint]) -> Dict[str, List[int]]:
     ys = sorted({p.y for p in all_points})
     return {"xCoords": xs, "yCoords": ys}
 
+
+
 # ----------------- MAIN ENDPOINT -----------------
 
 @router.post("/optimize-paths")
@@ -1401,6 +1403,9 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                             if (new_len * config.gridResolution ) <= expected_len:
                                 new_route = [Point(x=p.x, y=p.y) for p in new_path]
                                 print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * config.gridResolution :.2f}m")
+                                print("    Ruta:")
+                                for p in new_route:
+                                    print(f"      -> ({p.x}, {p.y})")
                                 break  # Ruta aceptable encontrada
 
                         redCable -= 0.1
@@ -1416,6 +1421,44 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
             else:
                 # No specified physical length ➜ just log route
                 print(f"[LENGTH] Cable {cid}: route length {actual_len:.2f}m (no specified max)")
+
+        cables_in_sections = set()
+        for sec in sections:
+            cables_in_sections.update(sec.cables)
+
+        for cid, route in cable_routes.items():
+            if cid in cables_in_sections or len(route) < 2:
+                continue
+
+            cb = next((c for c in config.cables if (c.cableLabel or f"{c.source}-{c.target}") == cid), None)
+            if not cb:
+                continue
+
+            net_name = cb.network or "default"
+
+            sec = Section(
+                points=route,
+                cables={cid},
+                network=net_name,
+                details={
+                    cid: CableDetail(
+                        cableLabel=cb.cableLabel,
+                        source=cb.source,
+                        target=cb.target,
+                        originalSource=cb.originalSource,
+                        originalTarget=cb.originalTarget,
+                        diameter=cb.diameter,
+                        cableFunction=cb.cableFunction,
+                        network=net_name,
+                        cableType=cb.cableType,
+                        routeLength=max(0, len(route)-1) * grid_resolution,
+                        length=cb.length
+                    )
+                },
+                strokeWidth=4
+            )
+            sections.append(sec)
+            print(f"➕ Sección extra añadida para cable {cid} con {len(route)} puntos")
 
 
         dbg = DebugInfo(
