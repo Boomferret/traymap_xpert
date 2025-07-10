@@ -49,6 +49,7 @@ class Cable(BaseModel):
     length: Optional[str] = None
 
 class GridConfig(BaseModel):
+    gridResolution: Optional[float] = 0.1
     width: int = Field(..., gt=0)
     height: int = Field(..., gt=0)
     walls: List[Point] = []
@@ -260,7 +261,7 @@ def _compute_weight(dist_wall: int, dist_tray: int, redCable: float = 1.0) -> fl
             redCable = redCable / 2
         return base_weight * 0.7 * redCable
     else:
-        return base_weight
+        return base_weight * redCable
 
 
 def build_weighted_graph(
@@ -992,6 +993,7 @@ def find_cable_route(src: PathPoint, dst: PathPoint,
 # ----------------- BUILDING SECTIONS -----------------
 
 def convert_to_sections(
+    grid_resolution: float ,
     final_mst: List[Tuple[PathPoint, PathPoint]],
     cables: List[Cable],
     machines: Dict[str, Machine],
@@ -1025,7 +1027,7 @@ def convert_to_sections(
 
     # Quick Dijkstra route for each cable
     def calc_length(points: List[Point]) -> float:
-        return (len(points)-1)*0.1 if len(points)>1 else 0.0
+        return (len(points)-1) * grid_resolution if len(points)>1 else 0.0
 
     for cb in cables:
         cid = cb.cableLabel or f"{cb.source}-{cb.target}"
@@ -1326,9 +1328,9 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         print(f"\nFinal MST distance: {final_len}, improvement over initial: {improvement_pct:.2f}%")
         print(f"Used Steiner points: {len(used_steiner_points)}, total comps used: {total_comps_used}")
         print(f"Passes used: {passes_used}")
-
+        grid_resolution=config.gridResolution
         # 6) Convert MST to sections (split around T-junctions), detect "natural" Steiner points
-        sections = convert_to_sections(mst_edges, config.cables, config.machines, config.networks, pair_routes)
+        sections = convert_to_sections( grid_resolution,mst_edges, config.cables, config.machines, config.networks, pair_routes)
 
         # Build adjacency again to detect T-junctions that might not come from explicit 3/4-term comps
         mst_adjacency = build_mst_adjacency(mst_edges, pair_routes)
@@ -1369,7 +1371,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
             expected_len = _parse_length(getattr(cb, "length", None))
 
-            actual_len = max(0, len(final_route) - 1) * 0.1  # 0.1m per grid edge
+            actual_len = max(0, len(final_route) - 1) * config.gridResolution  # 0.1m per grid edge
 
             if expected_len is not None:
                 if actual_len <= expected_len:
@@ -1387,14 +1389,18 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
                     while attempt < max_attempts and redCable > 0.0:
                         print(f"  ➤ Intento {attempt+1}: recalculando con redCable = {redCable:.2f}")
-                        less_wall_graph = get_graph(redCable)
+                        if(attempt!= max_attempts -1):
+                            less_wall_graph = get_graph(redCable)
+                        else:
+                            less_wall_graph = get_graph(0)
+
                         result = dijkstra_path(spt, tpt, less_wall_graph)
 
                         if result:
                             new_len, new_path = result
-                            if (new_len * 0.1) <= expected_len:
+                            if (new_len * config.gridResolution ) <= expected_len:
                                 new_route = [Point(x=p.x, y=p.y) for p in new_path]
-                                print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * 0.1:.2f}m")
+                                print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * config.gridResolution :.2f}m")
                                 break  # Ruta aceptable encontrada
 
                         redCable -= 0.1
@@ -1402,7 +1408,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
                     if new_route:
                         cable_routes[cid] = new_route
-                        actual_len = max(0, len(new_route) - 1) * 0.1
+                        actual_len = max(0, len(new_route) - 1) * config.gridResolution 
                         improv = expected_len - actual_len
                         print(f"    👍 Ruta final {actual_len:.2f}m (margin {improv:.2f}m)")
                     else:

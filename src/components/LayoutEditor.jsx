@@ -465,6 +465,7 @@ export const LayoutEditor = () => {
       }));
 
       const requestData = {
+        gridResolution:canvasConfig.gridResolution,
         width: canvasConfig.width * 10,
         height: canvasConfig.height * 10,
         walls: cleanedWalls,
