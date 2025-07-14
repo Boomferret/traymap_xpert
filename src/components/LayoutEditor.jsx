@@ -686,6 +686,38 @@ export const LayoutEditor = () => {
     }
   }, [cables, importedCables, fetchOptimalPaths]);
 
+  // Handle cable deletion
+  const handleCableDelete = useCallback(async (cable) => {
+    try {
+      console.log(`Deleting cable ${cable.cableLabel || `${cable.source}-${cable.target}`}`);
+      
+      // Remove the cable from the cables array
+      const cablesToUpdate = importedCables.length > 0 ? importedCables : cables;
+      const updatedCables = cablesToUpdate.filter(c => {
+        // Remove cable if it matches either by label or by source/target combination
+        const matchesByLabel = c.cableLabel && cable.cableLabel && c.cableLabel === cable.cableLabel;
+        const matchesBySourceTarget = c.source === cable.source && c.target === cable.target;
+        return !(matchesByLabel || matchesBySourceTarget);
+      });
+
+      // Update the appropriate cables state
+      if (importedCables.length > 0) {
+        setImportedCables(updatedCables);
+      } else {
+        setCables(updatedCables);
+      }
+
+      console.log(`Cable deleted. Remaining cables: ${updatedCables.length}`);
+
+      // Trigger re-optimization with updated cable data
+      await fetchOptimalPaths();
+      
+    } catch (error) {
+      console.error('Error deleting cable:', error);
+      throw error;
+    }
+  }, [cables, importedCables, fetchOptimalPaths]);
+
   const handleExport = async () => {
     // Función para convertir URL de imagen a base64 usando canvas
     async function getBase64Image(imgUrl) {
@@ -2140,6 +2172,7 @@ export const LayoutEditor = () => {
                 <ProblematicCablesPanel
                   problematicCables={problematicCables}
                   onCableLengthUpdate={handleCableLengthUpdate}
+                  onCableDelete={handleCableDelete}
                   isLoading={isLoading}
                 />
               </div>

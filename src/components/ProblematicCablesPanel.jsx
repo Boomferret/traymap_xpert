@@ -2,17 +2,19 @@ import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { AlertTriangle, RefreshCw, Plus } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Plus, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
 export const ProblematicCablesPanel = ({ 
   problematicCables = [], 
   onCableLengthUpdate,
+  onCableDelete,
   isLoading = false 
 }) => {
   const [editingCable, setEditingCable] = useState(null);
   const [newLength, setNewLength] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(null);
 
   const handleEditStart = (cable) => {
     setEditingCable(cable);
@@ -46,6 +48,30 @@ export const ProblematicCablesPanel = ({
       alert('Failed to update cable length');
     } finally {
       setIsUpdating(false);
+    }
+  };
+
+  const handleCableDelete = async (cable) => {
+    if (!onCableDelete) {
+      console.warn('onCableDelete handler not provided');
+      return;
+    }
+
+    const cableLabel = cable.cableLabel || `${cable.source} → ${cable.target}`;
+    const confirmed = window.confirm(
+      `Are you sure you want to ignore/delete cable "${cableLabel}"?\n\nThis will permanently remove it from the dataset and cannot be undone.`
+    );
+    
+    if (!confirmed) return;
+
+    setIsDeleting(cable.cableLabel || `${cable.source}-${cable.target}`);
+    try {
+      await onCableDelete(cable);
+    } catch (error) {
+      console.error('Error deleting cable:', error);
+      alert('Failed to delete cable');
+    } finally {
+      setIsDeleting(null);
     }
   };
 
@@ -161,16 +187,31 @@ export const ProblematicCablesPanel = ({
                   </div>
                 </div>
               ) : (
-                <div className="pt-2 border-t">
+                <div className="pt-2 border-t space-y-2">
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={() => handleEditStart(cable)}
                     className="text-xs h-6 px-2 w-full"
-                    disabled={isLoading}
+                    disabled={isLoading || isDeleting}
                   >
                     <Plus className="h-3 w-3 mr-1" />
                     Increase Length
+                  </Button>
+                  
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleCableDelete(cable)}
+                    disabled={isLoading || isDeleting}
+                    className="text-xs h-6 px-2 w-full text-red-600 border-red-300 hover:bg-red-50 hover:text-red-700"
+                  >
+                    {isDeleting === (cable.cableLabel || `${cable.source}-${cable.target}`) ? (
+                      <RefreshCw className="h-3 w-3 animate-spin mr-1" />
+                    ) : (
+                      <Trash2 className="h-3 w-3 mr-1" />
+                    )}
+                    Ignore Cable
                   </Button>
                 </div>
               )}
