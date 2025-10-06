@@ -1404,7 +1404,6 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
         # 8) Build final cable routes
         cable_routes = {}
-        rerouted_cables = set()  # Track cables that were re-routed
         problematic_cables = []  # Track cables with length issues
         
         for cb in config.cables:
@@ -1439,9 +1438,9 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                 else:
                     over = actual_len - expected_len
                     pct = 100 * over / expected_len
-                    print(f"[LENGTH ❌] Cable {cid}: route {actual_len:.2f}m exceeds {expected_len:.2f}m (+{over:.2f}m, {pct:.1f}% longer). Attempting re-route…")
+                    print(f"[LENGTH ❌] Cable {cid}: route {actual_len:.2f}m exceeds {expected_len:.2f}m (+{over:.2f}m, {pct:.1f}% longer)")
  
-                    # Add to problematic cables before attempting re-route
+                    # Add to problematic cables
                     problematic_cables.append(ProblematicCable(
                         cableLabel=cb.cableLabel,
                         source=cb.source,
@@ -1452,73 +1451,11 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                         excessLength=over,
                         excessPercentage=pct
                     ))
-                    
-                    # Try to find cheaper weighted path by relaxing wall penalty (redCable ↓)
-                    max_attempts = 1
-                    attempt = 0
-                    redCable = 0.25
-                    new_route = None
-
-                    while attempt < max_attempts and redCable > 0.0:
-                        print(f"  ➤ Intento {attempt+1}: recalculando con redCable = {redCable:.2f}")
-                        if(attempt!= max_attempts -1):
-                            less_wall_graph = get_graph(redCable)
-                        else:
-                            less_wall_graph = get_graph(0)
-
-                        result = dijkstra_path(spt, tpt, less_wall_graph)
-
-                        if result:
-                            new_len, new_path = result
-                            if (new_len * config.gridResolution ) <= expected_len:
-                                new_route = [Point(x=p.x, y=p.y) for p in new_path]
-                                print(f"    ✔️ Nueva ruta aceptada con longitud {new_len * config.gridResolution :.2f}m")
-                                print("    Ruta:")
-                                for p in new_route:
-                                    print(f"      -> ({p.x}, {p.y})")
-                                break  # Ruta aceptable encontrada
-                        redCable -= 0.1
-                        attempt += 1
-
-                    if new_route:
-                        cable_routes[cid] = new_route
-                        rerouted_cables.add(cid)  # Mark cable as re-routed
-                        actual_len = max(0, len(new_route) - 1) * config.gridResolution 
-                        improv = expected_len - actual_len
-                        print(f"    👍 Ruta final {actual_len:.2f}m (margin {improv:.2f}m)")
-                        
-                        # Remove from problematic cables if re-route was successful
-                        problematic_cables = [pc for pc in problematic_cables if not (
-                            pc.source == cb.source and pc.target == cb.target and pc.cableLabel == cb.cableLabel
-                        )]
-                    else:
-                        print(f"    ✖️ No se encontró ruta ≤ cable length tras {attempt} intentos.  Consider longer cable or manual adjustment.")
             else:
                 # No specified physical length ➜ just log route
                 print(f"[LENGTH] Cable {cid}: route length {actual_len:.2f}m (no specified max)")
 
-        # Remove re-routed cables from existing sections
-        if rerouted_cables:
-            print(f"🔄 Processing {len(rerouted_cables)} re-routed cables: {rerouted_cables}")
-            sections_to_keep = []
-            for sec in sections:
-                # Remove re-routed cables from this section
-                remaining_cables = sec.cables - rerouted_cables
-                if remaining_cables:
-                    # Update section with remaining cables and their details
-                    remaining_details = {cid: detail for cid, detail in sec.details.items() 
-                                       if cid in remaining_cables}
-                    updated_section = Section(
-                        points=sec.points,
-                        cables=remaining_cables,
-                        network=sec.network,
-                        details=remaining_details,
-                        strokeWidth=4 + min(len(remaining_cables)*0.75, 15)
-                    )
-                    sections_to_keep.append(updated_section)
-                # If section has no remaining cables, it's discarded
-            sections = sections_to_keep
-            print(f"🗑️  Updated sections: {len(sections)} sections remain after removing re-routed cables")
+
 
         # Build network lookup table for proper network assignment
         network_lookup = {}
@@ -1530,9 +1467,10 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         for sec in sections:
             cables_in_sections.update(sec.cables)
 
-        # Create sections for cables not in sections (including re-routed ones)
+        # Create sections for cables not in sections
         for cid, route in cable_routes.items():
-
+            if cid in cables_in_sections:
+                continue
 
             cb = next((c for c in config.cables if (c.cableLabel or f"{c.source}-{c.target}") == cid), None)
             if not cb:
@@ -1563,8 +1501,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                 strokeWidth=4
             )
             sections.append(sec)
-            status = "re-routed" if cid in rerouted_cables else "extra"
-            print(f"➕ Sección {status} añadida para cable {cid} con {len(route)} puntos en red '{net_name}'")
+            print(f"➕ Section added for cable {cid} with {len(route)} points in network '{net_name}'")
 
         for i in (0,5):
             for cb in config.cables:
