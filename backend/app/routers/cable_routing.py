@@ -57,6 +57,20 @@ TRAY_LEVELS = {"overhead", "ground", "below"}
 DEFAULT_TRAY_LEVEL = "ground"
 TRAY_LEVEL_ORDER = ["overhead", "ground", "below"]
 
+# Cost parameters favouring tray/wall alignment while still allowing Steiner flexibility.
+BASE_STEP_COST = 10.0
+WALL_BLOCK_FACTOR = 10.0
+WALL_DISTANCE_FACTORS = {
+    1: 0.35,
+    2: 0.55,
+    3: 0.7,
+}
+TRAY_DISTANCE_FACTORS = {
+    0: 0.2,
+    1: 0.6,
+}
+MIN_CELL_WEIGHT = 0.1
+
 def normalize_tray_level(value: Optional[str]) -> str:
     if not value:
         return DEFAULT_TRAY_LEVEL
@@ -142,6 +156,16 @@ class ProblematicCable(BaseModel):
     excessLength: float
     excessPercentage: float
 
+def _parse_length(value: Optional[str]) -> Optional[float]:
+    """Convert user-provided cable length strings into metres."""
+    if not value:
+        return None
+    try:
+        txt = value.strip().lower().replace("m", "").replace(",", ".")
+        return float(txt)
+    except (ValueError, AttributeError):
+        return None
+
 class RoutingResponse(BaseModel):
     sections: List[Section] = []
     cableRoutes: Dict[str, List[Point]] = {}
@@ -196,51 +220,48 @@ class FullComponent:
 
 # ----------------- HELPER FUNCTIONS -----------------
 
+def _heuristic_weight(dist_wall: float, dist_tray: float, red_cable: float = 1.0) -> float:
+    """Balance wall hugging and tray following while keeping per-step cost reasonable."""
+    safe_red = max(red_cable, 1e-3)
+
+    if dist_wall == math.inf:
+        weight = BASE_STEP_COST * safe_red
+    else:
+        wall_dist = int(dist_wall)
+        if wall_dist <= 0:
+            weight = BASE_STEP_COST * WALL_BLOCK_FACTOR * safe_red
+        else:
+            factor = WALL_DISTANCE_FACTORS.get(wall_dist, 1.0)
+            weight = BASE_STEP_COST * factor * safe_red
+
+    if dist_tray != math.inf:
+        tray_dist = int(dist_tray)
+        if tray_dist == 0 and 0 in TRAY_DISTANCE_FACTORS:
+            weight = min(weight, BASE_STEP_COST * TRAY_DISTANCE_FACTORS[0] * safe_red)
+        elif tray_dist in TRAY_DISTANCE_FACTORS:
+            weight *= TRAY_DISTANCE_FACTORS[tray_dist]
+
+    return max(MIN_CELL_WEIGHT, weight)
+
+
 def calculate_cell_weight(x: int, y: int, width: int, height: int, walls: Set[PathPoint], trays: Set[PathPoint]=[],redCalble:float = 1.0) -> float:
     """
-    Calculate the weight for a cell based on its distance to the nearest wall.
-    Cells closer to walls have lower weights (preferred for routing).
+    Calculate the weight for a cell based on wall proximity and tray alignment heuristics.
     """
-    min_dist_to_tray = float('inf')
+
+    min_dist_to_wall = math.inf
+    for wall in walls:
+        dist = abs(x - wall.x) + abs(y - wall.y)
+        if dist < min_dist_to_wall:
+            min_dist_to_wall = dist
+
+    min_dist_to_tray = math.inf
     for tray in trays:
         dist = abs(x - tray.x) + abs(y - tray.y)
-        min_dist_to_tray = min(min_dist_to_tray, dist)
+        if dist < min_dist_to_tray:
+            min_dist_to_tray = dist
 
-    if min_dist_to_tray == 0 and redCalble==1.0:
-        return -0.40 
-    
-
-    # Base weight for open areas
-    base_weight = 10.0
-    
-    # Find minimum distance to any wall
-    min_dist_to_wall = float('inf')
-    
-    # Don't consider canvas boundaries as walls - only check internal walls
-    # Check distance to internal walls
-    for wall in walls:
-        dist = abs(x - wall.x) + abs(y - wall.y)  # Manhattan distance
-        min_dist_to_wall = min(min_dist_to_wall, dist)
-
-    # If no walls exist, return base weight
-    if min_dist_to_wall == float('inf'):
-        return base_weight
-
-    # Weight calculation: closer to walls = lower weight
-    # Weight decreases exponentially as we get closer to walls
-    #if the cable is shorther than te route we add a new param to be able to recalcule the weights
-    if min_dist_to_wall == 0:
-        return base_weight * 10  # High penalty for being on a wall (shouldn't happen)
-    elif min_dist_to_wall == 1:
-        return base_weight * 0.3  # Very low weight for adjacent to walls
-    elif min_dist_to_wall == 2:
-        return base_weight * 0.5 *redCalble # Low weight for cells 2 steps from walls
-    elif min_dist_to_wall == 3:
-        if redCalble!= 1.0:
-            redCalble=redCalble/2
-        return base_weight * 0.7 *redCalble # Moderate weight
-    else:
-        return base_weight  # Full weight for cells far from walls
+    return _heuristic_weight(min_dist_to_wall, min_dist_to_tray, redCalble)
 
 # Legacy (slow) version kept for reference – DO NOT USE.
 def _build_weighted_graph_old(width: int, height: int, walls: Set[PathPoint], trays: Set[PathPoint] = set(),redCable:float = 1.0) -> Dict[PathPoint, List[Tuple[PathPoint, float]]]:
@@ -296,27 +317,7 @@ def _bfs_distance_map(width: int, height: int, sources: Set[PathPoint]) -> List[
 
 def _compute_weight(dist_wall: int, dist_tray: int, redCable: float = 1.0) -> float:
     """Vectorised replacement for *calculate_cell_weight* using pre-computed distances."""
-    # Base weight configuration copied from original logic
-    if dist_tray == 0 and redCable == 1.0:
-        return 0
-
-    base_weight = 10.0
-
-    if dist_wall == math.inf:
-        return base_weight
-
-    if dist_wall == 0:
-        return base_weight * 10  # High penalty for being on a wall (shouldn't happen – we skip walls)
-    elif dist_wall == 1:
-        return base_weight * 0.35
-    elif dist_wall == 2:
-        return base_weight * 0.55* redCable
-    elif dist_wall == 3:
-        if redCable != 1.0:
-            redCable = redCable / 2
-        return base_weight * 0.7 * redCable
-    else:
-        return base_weight * redCable
+    return _heuristic_weight(dist_wall, dist_tray, redCable)
 
 
 def build_weighted_graph(
@@ -987,6 +988,138 @@ def build_mst_adjacency(mst_edges: List[Tuple[PathPoint, PathPoint]],
             adjacency.setdefault(p2, set()).add(p1)
     return adjacency
 
+
+def _edge_step_length(u: PathPoint, v: PathPoint,
+                      pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]
+                     ) -> int:
+    """Return how many grid steps an MST edge spans."""
+    route = pair_routes.get((u, v)) or pair_routes.get((v, u))
+    if not route:
+        return math.inf
+    _, path = route
+    return max(0, len(path) - 1)
+
+
+def _force_edge_on_tree(
+    mst_edges: List[Tuple[PathPoint, PathPoint]],
+    u: PathPoint,
+    v: PathPoint,
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]
+) -> Tuple[List[Tuple[PathPoint, PathPoint]], Optional[Tuple[PathPoint, PathPoint]]]:
+    """Insert edge (u,v) into MST and drop the longest edge on the induced cycle."""
+
+    if any((edge[0] == u and edge[1] == v) or (edge[0] == v and edge[1] == u) for edge in mst_edges):
+        return mst_edges, None
+
+    adjacency: Dict[PathPoint, Set[PathPoint]] = defaultdict(set)
+    for a, b in mst_edges:
+        adjacency[a].add(b)
+        adjacency[b].add(a)
+
+    queue = deque([u])
+    parents: Dict[PathPoint, Optional[PathPoint]] = {u: None}
+    while queue and v not in parents:
+        current = queue.popleft()
+        for nbr in adjacency[current]:
+            if nbr not in parents:
+                parents[nbr] = current
+                queue.append(nbr)
+
+    if v not in parents:
+        return mst_edges, None
+
+    path_nodes: List[PathPoint] = []
+    node: Optional[PathPoint] = v
+    while node is not None:
+        path_nodes.append(node)
+        node = parents[node]
+    path_nodes.reverse()
+
+    path_edges = [(path_nodes[i], path_nodes[i+1]) for i in range(len(path_nodes)-1)]
+    if not path_edges:
+        return mst_edges, None
+
+    edge_to_remove = max(
+        path_edges,
+        key=lambda edge: _edge_step_length(edge[0], edge[1], pair_routes)
+    )
+
+    updated = [edge for edge in mst_edges if not (
+        (edge[0] == edge_to_remove[0] and edge[1] == edge_to_remove[1]) or
+        (edge[0] == edge_to_remove[1] and edge[1] == edge_to_remove[0])
+    )]
+    updated.append((u, v))
+    return updated, edge_to_remove
+
+
+def enforce_cable_length_limits(
+    mst_edges: List[Tuple[PathPoint, PathPoint]],
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]],
+    cables: List[Cable],
+    machines: Dict[str, Machine],
+    grid_resolution: float,
+    weighted_graph: Dict[PathPoint, List[Tuple[PathPoint, float]]]
+) -> Tuple[List[Tuple[PathPoint, PathPoint]], bool]:
+    """
+    Ensure every cable route can fit within the specified length by promoting direct edges when required.
+    """
+
+    if not cables:
+        return mst_edges, False
+
+    updated_mst = list(mst_edges)
+    adjusted = False
+
+    for cb in cables:
+        allowed_length = _parse_length(getattr(cb, "length", None))
+        if allowed_length is None or grid_resolution <= 0:
+            continue
+
+        max_steps = math.floor(allowed_length / grid_resolution + 1e-9)
+        source_machine = machines.get(cb.source)
+        target_machine = machines.get(cb.target)
+        if not source_machine or not target_machine:
+            continue
+
+        src = PathPoint(source_machine.x, source_machine.y)
+        dst = PathPoint(target_machine.x, target_machine.y)
+
+        mst_route_points = find_cable_route(src, dst, updated_mst, pair_routes)
+        current_steps = max(0, len(mst_route_points) - 1)
+        if current_steps <= max_steps:
+            continue
+
+        if (src, dst) not in pair_routes and (dst, src) not in pair_routes:
+            result = dijkstra_path(src, dst, weighted_graph)
+            if not result:
+                continue
+            cost, path = result
+            pair_routes[(src, dst)] = (cost, path)
+            pair_routes[(dst, src)] = (cost, list(reversed(path)))
+
+        direct_route = pair_routes.get((src, dst)) or pair_routes.get((dst, src))
+        if not direct_route:
+            continue
+
+        _, direct_path = direct_route
+        direct_steps = max(0, len(direct_path) - 1)
+        if direct_steps == 0 or direct_steps > max_steps:
+            continue
+
+        updated_mst, removed_edge = _force_edge_on_tree(updated_mst, src, dst, pair_routes)
+        if removed_edge is not None:
+            adjusted = True
+            logger.info(
+                "[LENGTH] Forced direct edge %s-%s to satisfy %.2fm cable (removed %s-%s)",
+                cb.source,
+                cb.target,
+                allowed_length,
+                f"{removed_edge[0].x},{removed_edge[0].y}",
+                f"{removed_edge[1].x},{removed_edge[1].y}"
+            )
+
+    return updated_mst, adjusted
+
 def detect_steiner_points(mst_adjacency: Dict[PathPoint, Set[PathPoint]]) -> Set[PathPoint]:
     """
     A 'natural' Steiner point or T-junction is any node with degree >= 3.
@@ -1391,6 +1524,19 @@ def _optimize_single_level(config: GridConfig, level_name: str) -> RoutingRespon
                 print(f"No improvement in PASS {pass_id}, stopping.")
                 break
 
+        # Enforce cable length limits before final accounting
+        grid_resolution = config.gridResolution or 0.1
+        mst_edges, length_adjusted = enforce_cable_length_limits(
+            mst_edges,
+            pair_routes,
+            config.cables,
+            config.machines,
+            grid_resolution,
+            weighted_graph
+        )
+        if length_adjusted:
+            current_length = mst_total_length(mst_edges, pair_routes)
+
         final_len = current_length
         improvement_pct = 0.0
         if init_length > 0:
@@ -1399,7 +1545,6 @@ def _optimize_single_level(config: GridConfig, level_name: str) -> RoutingRespon
         print(f"\nFinal MST distance: {final_len}, improvement over initial: {improvement_pct:.2f}%")
         print(f"Used Steiner points: {len(used_steiner_points)}, total comps used: {total_comps_used}")
         print(f"Passes used: {passes_used}")
-        grid_resolution=config.gridResolution
         # 6) Convert MST to sections (split around T-junctions), detect "natural" Steiner points
         sections = convert_to_sections( grid_resolution,mst_edges, config.cables, config.machines, config.networks, pair_routes, level_name)
 
@@ -1434,25 +1579,17 @@ def _optimize_single_level(config: GridConfig, level_name: str) -> RoutingRespon
             # --------------------------------------------------------
             # 📏  Cable length sanity-check vs available cable length
             # --------------------------------------------------------
-            def _parse_length(val: Optional[str]) -> Optional[float]:
-                if not val:
-                    return None
-                try:
-                    txt = val.strip().lower().replace("m", "").replace(",", ".")
-                    return float(txt)
-                except Exception:
-                    return None
-
             expected_len = _parse_length(getattr(cb, "length", None))
-            actual_len = max(0, len(final_route) - 1) * config.gridResolution  # 0.1m per grid edge
-            
+            actual_len = max(0, len(final_route) - 1) * grid_resolution
+
             # Calculate theoretical minimum length (Manhattan distance)
             theoretical_min = abs(spt.x - tpt.x) + abs(spt.y - tpt.y)
-            theoretical_min_len = theoretical_min * config.gridResolution
+            theoretical_min_len = theoretical_min * grid_resolution
 
             if expected_len is not None:
                 if actual_len <= expected_len and (cb.source!="CUS" or cb.target!="CUS"):
-                    print(f"[LENGTH ✅] Cable {cid}: route {actual_len:.2f}m ≤ specified {expected_len:.2f}m")
+                    slack = expected_len - actual_len
+                    print(f"[LENGTH ✅] Cable {cid}: route {actual_len:.2f}m ≤ {expected_len:.2f}m (slack {slack:.2f}m)")
                 else:
                     over = actual_len - expected_len
                     pct = 100 * over / expected_len
