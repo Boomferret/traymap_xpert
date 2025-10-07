@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import { Card } from './ui/Card';
-import { Button } from './ui/Button';
+import { Card } from './ui/card';
+import { Button } from './ui/button';
 
 export const InfoPanel = ({ 
   selectedElement, 

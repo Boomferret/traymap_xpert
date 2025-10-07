@@ -5,11 +5,13 @@ import { LayoutGrid } from './LayoutGrid';
 import { NetworkPanel } from './NetworkPanel';
 import { InfoSidebar } from './InfoSidebar';
 import { ProblematicCablesPanel } from './ProblematicCablesPanel';
+import { CableRunsPanel } from './CableRunsPanel';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { EditorModes } from '@/constants/editorModes';
+import { DEFAULT_TRAY_LEVEL } from '@/constants/trayLevels';
 import { optimizeNetworkPaths, calculateHananGrid } from '@/utils/cableUtils';
 import { ChevronLeft, ChevronRight, Download, Upload, Plus, X, Blocks, Squirrel, CircleDot, Wrench, Tractor, GripVertical } from 'lucide-react';
 import { InitialSetupModal } from './InitialSetupModal';
@@ -50,6 +52,21 @@ const DEFAULT_NETWORKS = [
     functions: ['GROUNDING AND EQUIPOTENTIAL VOLTAGE']
   }
 ];
+
+const getCableIdentifier = (cable) => {
+  if (!cable) return '';
+  if (cable.id) return cable.id;
+  if (cable.cableLabel) return cable.cableLabel;
+  const source = cable.source || 'unknown';
+  const target = cable.target || 'unknown';
+  const func = cable.cableFunction || '';
+  return `${source}__${target}__${func}`;
+};
+
+const withDefaultTrayLevel = (cable) => ({
+  ...cable,
+  trayLevel: cable?.trayLevel || DEFAULT_TRAY_LEVEL
+});
 
 const MAX_NETWORKS = 8;
 
@@ -306,6 +323,35 @@ export const LayoutEditor = () => {
     );
   }, [cables, importedCables, cableSearchTerm]);
 
+  const activeCablesWithLevels = useMemo(() => {
+    const baseCables = importedCables.length > 0 ? importedCables : cables;
+    return baseCables.map(withDefaultTrayLevel);
+  }, [cables, importedCables]);
+
+  const machineAliasMap = useMemo(() => {
+    const aliasMap = {};
+    Object.entries(machines || {}).forEach(([machineName, machineData]) => {
+      if (!machineName) return;
+      const trimmedName = machineName.trim();
+      if (!trimmedName || trimmedName === "?") return;
+
+      aliasMap[trimmedName] = trimmedName;
+      aliasMap[trimmedName.toLowerCase()] = trimmedName;
+
+      const mergedHistory = machineData?.mergedHistory;
+      if (mergedHistory) {
+        Object.keys(mergedHistory).forEach((alias) => {
+          if (!alias) return;
+          const trimmedAlias = String(alias).trim();
+          if (trimmedAlias && trimmedAlias !== "?") {
+            aliasMap[trimmedAlias] = trimmedName;
+            aliasMap[trimmedAlias.toLowerCase()] = trimmedName;
+          }
+        });
+      }
+    });
+    return aliasMap;
+  }, [machines]);
   const fetchOptimalPaths = useCallback(async () => {
     const startTime = Date.now();
     const requestId = Math.random().toString(36).substr(2, 9);
@@ -327,7 +373,7 @@ export const LayoutEditor = () => {
       setError(''); // Clear any previous errors
       
       // Get all available cables
-      const allCables = importedCables.length > 0 ? importedCables : cables;
+      const allCables = (importedCables.length > 0 ? importedCables : cables).map(withDefaultTrayLevel);
 
       // Log detailed cable information
       console.group(`📋 [${new Date().toLocaleTimeString()}] CABLE ANALYSIS (Request ID: ${requestId})`);
@@ -687,6 +733,33 @@ export const LayoutEditor = () => {
   }, [cables, importedCables, fetchOptimalPaths]);
 
   // Handle cable deletion
+  const handleCableTrayLevelChange = useCallback((run, newLevel) => {
+    if (!run || !Array.isArray(run.cables) || run.cables.length === 0) return;
+
+    const targetIds = new Set(
+      run.cables
+        .map((cable) => getCableIdentifier(cable))
+        .filter(Boolean)
+    );
+
+    if (targetIds.size === 0) return;
+
+    const normalizeLevels = (items) =>
+      items.map((item) =>
+        targetIds.has(getCableIdentifier(item))
+          ? withDefaultTrayLevel({ ...item, trayLevel: newLevel || DEFAULT_TRAY_LEVEL })
+          : withDefaultTrayLevel(item)
+      );
+
+    if (importedCables.length > 0) {
+      setImportedCables((prev) => normalizeLevels(prev));
+    } else {
+      setCables((prev) => normalizeLevels(prev));
+    }
+
+    markForOptimization();
+  }, [importedCables.length, markForOptimization]);
+
   const handleCableDelete = useCallback(async (cable) => {
     try {
       console.log(`Deleting cable ${cable.cableLabel || `${cable.source}-${cable.target}`}`);
@@ -1244,10 +1317,9 @@ export const LayoutEditor = () => {
 
   // Get unique networks and their info
   const networkInfo = useMemo(() => {
-    // Create a map of network types to their cable counts
     const networkCableCounts = new Map();
 
-    cables.forEach(cable => {
+    activeCablesWithLevels.forEach(cable => {
       const network = networks.find(n => n.functions.includes(cable.cableFunction));
       if (network) {
         const count = networkCableCounts.get(network.name) || 0;
@@ -1261,7 +1333,7 @@ export const LayoutEditor = () => {
       cables: new Set(Array(networkCableCounts.get(network.name) || 0).fill(null)),
       visible: networkVisibility[network.name] !== false
     }));
-  }, [networks, cables, networkVisibility]);
+  }, [networks, activeCablesWithLevels, networkVisibility]);
 
   const handleMachineInherit = useCallback((targetMachineName, sourceMachineName) => {
     // Get the target machine from placed machines
@@ -2080,6 +2152,15 @@ export const LayoutEditor = () => {
           </Card>
 
           {/* Network Panel */}
+          {/* Cable Runs Panel */}
+          <CableRunsPanel
+            className="flex-shrink-0 h-full"
+            cables={activeCablesWithLevels}
+            machineAliases={machineAliasMap}
+            onTrayLevelChange={handleCableTrayLevelChange}
+          />
+
+          {/* Network Panel */}
           <NetworkPanel
             className="flex-shrink min-w-48 max-w-md h-full"
             networks={networks}
@@ -2121,7 +2202,7 @@ export const LayoutEditor = () => {
                 walls={walls}
                 perforations={perforations}
                 machines={machines}
-                cables={importedCables.length > 0 ? importedCables : cables}
+                cables={activeCablesWithLevels}
                 networks={networks}
                 networkVisibility={networkVisibility}
                 activeMode={editorMode}

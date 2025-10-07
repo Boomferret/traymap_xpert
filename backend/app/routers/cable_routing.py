@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Set, Tuple
+from typing import Any, List, Dict, Optional, Set, Tuple
 from dataclasses import dataclass
 import itertools
 from heapq import heappush, heappop
-from collections import deque
+from collections import deque, defaultdict
 import math
 import logging
 
@@ -53,6 +53,19 @@ if not logger.handlers:
     # default level can be overridden by the main application
     logger.setLevel(logging.INFO)
 
+TRAY_LEVELS = {"overhead", "ground", "below"}
+DEFAULT_TRAY_LEVEL = "ground"
+TRAY_LEVEL_ORDER = ["overhead", "ground", "below"]
+
+def normalize_tray_level(value: Optional[str]) -> str:
+    if not value:
+        return DEFAULT_TRAY_LEVEL
+    normalized = value.strip().lower()
+    if normalized in TRAY_LEVELS:
+        return normalized
+    logger.warning(f"[LEVEL] Unknown tray level '{value}', defaulting to '{DEFAULT_TRAY_LEVEL}'")
+    return DEFAULT_TRAY_LEVEL
+
 # ----------------- MODELS / DATA STRUCTS -----------------
 
 class Point(BaseModel):
@@ -76,6 +89,7 @@ class Cable(BaseModel):
     network: Optional[str] = None
     cableType: Optional[str] = None
     length: Optional[str] = None
+    trayLevel: Optional[str] = None
 
 class GridConfig(BaseModel):
     gridResolution: Optional[float] = 0.1
@@ -138,6 +152,7 @@ class RoutingResponse(BaseModel):
     steinerPoints: List[Dict[str, int]] = []
     debug_info: Optional[DebugInfo] = None
     problematicCables: List[ProblematicCable] = []
+    levelSummaries: Dict[str, DebugInfo] = {}
 
 @dataclass
 class PathPoint:
@@ -1049,7 +1064,8 @@ def convert_to_sections(
     cables: List[Cable],
     machines: Dict[str, Machine],
     networks: List[Dict],
-    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]]
+    pair_routes: Dict[Tuple[PathPoint, PathPoint], Tuple[float, List[PathPoint]]],
+    level_name: str
 ) -> List[Section]:
     """
     1) Build MST adjacency.
@@ -1184,6 +1200,7 @@ def convert_to_sections(
                             diameter=c.diameter,
                             cableFunction=c.cableFunction,
                             network=net_name,
+                            trayLevel=level_name,
                             cableType=c.cableType,
                             routeLength=cable_lengths[cid],
                             length=getattr(c, 'length', None)
@@ -1199,6 +1216,7 @@ def convert_to_sections(
                         cables=used_cables,
                         network=net_name,
                         details=cable_details,
+                        level=level_name,
                         strokeWidth=4 + min(len(used_cables)*0.75, 15)
                     )
                     sections.append(sec)
@@ -1228,13 +1246,12 @@ def calculate_hanan_grid(all_points: List[PathPoint]) -> Dict[str, List[int]]:
 
 # ----------------- MAIN ENDPOINT -----------------
 
-@router.post("/optimize-paths")
-async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
+def _optimize_single_level(config: GridConfig, level_name: str) -> RoutingResponse:
     """
     Dijkstra-based approach with multi-pass Steiner + T-junction detection.
     """
     try:
-        print("\n=== Starting Dijkstra-based Cable Path Optimization ===")
+        print(f"\n=== Starting Dijkstra-based Cable Path Optimization (Level: {level_name.upper()}) ===")
         print(f"Grid: {config.width}x{config.height}")
         print(f"Machines: {len(config.machines)}, Cables: {len(config.cables)}")
         print(f"Walls: {len(config.walls)}, Perfs: {len(config.perforations)}")
@@ -1246,6 +1263,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 # Filter cables with valid machine references
         valid_cables = []
         for cb in config.cables:
+            cb.trayLevel = normalize_tray_level(getattr(cb, "trayLevel", None))
             if cb.source in config.machines and cb.target in config.machines:
                 valid_cables.append(cb)
             else:
@@ -1383,7 +1401,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
         print(f"Passes used: {passes_used}")
         grid_resolution=config.gridResolution
         # 6) Convert MST to sections (split around T-junctions), detect "natural" Steiner points
-        sections = convert_to_sections( grid_resolution,mst_edges, config.cables, config.machines, config.networks, pair_routes)
+        sections = convert_to_sections( grid_resolution,mst_edges, config.cables, config.machines, config.networks, pair_routes, level_name)
 
         # Build adjacency again to detect T-junctions that might not come from explicit 3/4-term comps
         mst_adjacency = build_mst_adjacency(mst_edges, pair_routes)
@@ -1449,7 +1467,8 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                         routeLength=actual_len,
                         theoreticalMinLength=theoretical_min_len,
                         excessLength=over,
-                        excessPercentage=pct
+                        excessPercentage=pct,
+                        trayLevel=level_name
                     ))
             else:
                 # No specified physical length ➜ just log route
@@ -1483,6 +1502,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                 points=route,
                 cables={cid},
                 network=net_name,
+                level=level_name,
                 details={
                     cid: CableDetail(
                         cableLabel=cb.cableLabel,
@@ -1493,6 +1513,7 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
                         diameter=cb.diameter,
                         cableFunction=cb.cableFunction,
                         network=net_name,
+                        trayLevel=level_name,
                         cableType=cb.cableType,
                         routeLength=max(0, len(route)-1) * grid_resolution,
                         length=cb.length
@@ -1539,6 +1560,107 @@ async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
 
     except Exception as ex:
         import traceback
+        if isinstance(ex, HTTPException):
+            raise
         print("\n=== ERROR in optimize_cable_paths ===")
         print(traceback.format_exc())
         raise HTTPException(500, f"Error: {ex}")
+
+
+
+
+
+
+
+
+@router.post("/optimize-paths")
+async def optimize_cable_paths(config: GridConfig) -> RoutingResponse:
+    """Optimize cable trays per level and combine the results."""
+    try:
+        if not config.cables:
+            logger.info("[LEVEL] No cables provided. Returning empty response.")
+            return RoutingResponse()
+
+        level_buckets: Dict[str, List[Cable]] = defaultdict(list)
+        for cable in config.cables:
+            normalized_level = normalize_tray_level(getattr(cable, "trayLevel", None))
+            cable.trayLevel = normalized_level
+            level_buckets[normalized_level].append(cable)
+
+        ordered_levels: List[str] = [level for level in TRAY_LEVEL_ORDER if level_buckets.get(level)]
+        extra_levels = [level for level in level_buckets.keys() if level not in ordered_levels]
+        ordered_levels.extend(sorted(extra_levels))
+
+        if not ordered_levels:
+            logger.info("[LEVEL] All cables filtered out after level normalization. Returning empty response.")
+            return RoutingResponse()
+
+        aggregated_sections: List[Section] = []
+        aggregated_routes: Dict[str, List[Point]] = {}
+        aggregated_problematic: List[ProblematicCable] = []
+        aggregated_steiner: List[Dict[str, Any]] = []
+        level_debug_map: Dict[str, DebugInfo] = {}
+
+        total_initial = 0.0
+        total_final = 0.0
+        total_components_tried = 0
+        total_components_used = 0
+        total_passes = 0
+
+        hanan_grid: Dict[str, List[int]] = {"xCoords": [], "yCoords": []}
+
+        for level in ordered_levels:
+            cables_for_level = level_buckets[level]
+            logger.info(f"[LEVEL] Optimizing '{level}' with {len(cables_for_level)} cables")
+
+            level_config = config.model_copy(deep=True)
+            level_config.cables = [cable.model_copy(deep=True) for cable in cables_for_level]
+
+            level_result = _optimize_single_level(level_config, level)
+
+            aggregated_sections.extend(level_result.sections or [])
+            aggregated_routes.update(level_result.cableRoutes or {})
+            aggregated_problematic.extend(level_result.problematicCables or [])
+            aggregated_steiner.extend(level_result.steinerPoints or [])
+
+            if not hanan_grid["xCoords"] and not hanan_grid["yCoords"]:
+                hanan_grid = level_result.hananGrid or hanan_grid
+
+            if level_result.debug_info:
+                level_debug_map[level] = level_result.debug_info
+                total_initial += level_result.debug_info.initial_mst_length
+                total_final += level_result.debug_info.final_length
+                total_components_tried += level_result.debug_info.num_components_tried
+                total_components_used += level_result.debug_info.num_components_used
+                total_passes += level_result.debug_info.passes_used
+
+        improvement_pct = ((total_initial - total_final) / total_initial * 100) if total_initial else 0.0
+
+        combined_debug = DebugInfo(
+            initial_mst_length=total_initial,
+            final_length=total_final,
+            improvement_percentage=improvement_pct,
+            num_steiner_points=len(aggregated_steiner),
+            num_sections=len(aggregated_sections),
+            num_components_tried=total_components_tried,
+            num_components_used=total_components_used,
+            passes_used=total_passes
+        )
+
+        return RoutingResponse(
+            sections=aggregated_sections,
+            cableRoutes=aggregated_routes,
+            hananGrid=hanan_grid,
+            steinerPoints=aggregated_steiner,
+            debug_info=combined_debug,
+            problematicCables=aggregated_problematic,
+            levelSummaries=level_debug_map
+        )
+
+    except Exception as ex:
+        import traceback
+        print("\n=== ERROR in optimize_cable_paths ===")
+        print(traceback.format_exc())
+        raise HTTPException(500, f"Error: {ex}")
+
+
